@@ -1,0 +1,21 @@
+{
+  "name": "miniraft-gateway",
+  "version": "1.0.0",
+  "description": "WebSocket gateway for Mini-RAFT collaborative drawing board",
+  "main": "server.js",
+  "scripts": {
+    "start": "nodemon server.js",
+    "dev": "nodemon server.js"
+  },
+  "keywords": ["raft", "websocket", "gateway", "consensus"],
+  "author": "Sathwik HS",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.14.2",
+    "axios": "^1.5.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
