@@ -34,6 +34,8 @@ let knownLeaderId = null;            // Cached leader replica ID
 let connectedClients = new Set();    // Set of connected WebSocket clients
 let messageCount = 0;                // Total messages received
 let broadcastCount = 0;              // Total broadcasts sent
+let strokesForwarded = 0;            // Total strokes forwarded to leader
+let strokesFailed = 0;               // Total strokes that failed to forward
 
 // ── Logging Helper ─────────────────────────────────────────────────────────
 function logInfo(message, data = {}) {
@@ -45,6 +47,211 @@ function logInfo(message, data = {}) {
 function logError(message, error) {
     const timestamp = new Date().toISOString();
     console.error(`[${timestamp}] [GATEWAY] ERROR: ${message}`, error.message || error);
+}
+
+// ── Leader Discovery ───────────────────────────────────────────────────────
+
+/**
+ * Fetch status from a single replica with timeout
+ * @param {string} url - Replica URL
+ * @returns {Promise<object>} Status object with health info
+ */
+async function fetchReplicaStatus(url) {
+    try {
+        const response = await axios.get(`${url}/health`, { 
+            timeout: 500,  // 500ms timeout
+            validateStatus: () => true  // Don't throw on non-200
+        });
+        
+        if (response.status === 200 && response.data) {
+            return {
+                url,
+                healthy: true,
+                ...response.data
+            };
+        }
+        
+        return {
+            url,
+            healthy: false,
+            error: `HTTP ${response.status}`
+        };
+    } catch (error) {
+        return {
+            url,
+            healthy: false,
+            error: error.code || error.message
+        };
+    }
+}
+
+/**
+ * Poll all replicas and discover who the current leader is
+ * @returns {Promise<string|null>} Leader URL or null if no leader found
+ */
+async function discoverLeader() {
+    logInfo("Starting leader discovery", { replicas: REPLICA_URLS });
+    
+    // Poll all replicas in parallel
+    const statusPromises = REPLICA_URLS.map(url => fetchReplicaStatus(url));
+    const statuses = await Promise.all(statusPromises);
+    
+    // Filter healthy replicas
+    const healthyReplicas = statuses.filter(s => s.healthy);
+    
+    logInfo("Received replica statuses", { 
+        total: statuses.length,
+        healthy: healthyReplicas.length
+    });
+    
+    // Find replica reporting as leader
+    const leaderReplica = healthyReplicas.find(s => s.role === "leader");
+    
+    if (leaderReplica) {
+        knownLeaderUrl = leaderReplica.url;
+        knownLeaderId = leaderReplica.replicaId;
+        
+        logInfo("Leader discovered", { 
+            leaderId: knownLeaderId,
+            leaderUrl: knownLeaderUrl,
+            term: leaderReplica.term
+        });
+        
+        return knownLeaderUrl;
+    }
+    
+    // No leader found - check if any replica knows who the leader is
+    const replicaWithLeaderInfo = healthyReplicas.find(s => s.leader);
+    
+    if (replicaWithLeaderInfo && replicaWithLeaderInfo.leader) {
+        // Try to find that leader's URL
+        const leaderIdFromReplica = replicaWithLeaderInfo.leader;
+        const possibleLeader = healthyReplicas.find(
+            s => s.replicaId === leaderIdFromReplica
+        );
+        
+        if (possibleLeader) {
+            knownLeaderUrl = possibleLeader.url;
+            knownLeaderId = possibleLeader.replicaId;
+            
+            logInfo("Leader found via hint", { 
+                leaderId: knownLeaderId,
+                leaderUrl: knownLeaderUrl
+            });
+            
+            return knownLeaderUrl;
+        }
+    }
+    
+    // No leader available
+    knownLeaderUrl = null;
+    knownLeaderId = null;
+    
+    logInfo("No leader found", { 
+        healthyReplicas: healthyReplicas.length,
+        inElection: healthyReplicas.some(s => s.role === "candidate")
+    });
+    
+    return null;
+}
+
+/**
+ * Ensure we know the current leader URL
+ * @returns {Promise<string|null>} Leader URL or null
+ */
+async function ensureLeaderUrl() {
+    // If we have a cached leader, return it
+    if (knownLeaderUrl) {
+        return knownLeaderUrl;
+    }
+    
+    // Otherwise discover the leader
+    return await discoverLeader();
+}
+
+// ── Stroke Forwarding to Leader ───────────────────────────────────────────
+
+/**
+ * Forward a stroke to the current leader replica
+ * @param {object} strokeData - Stroke data from client
+ * @param {number} maxRetries - Maximum retry attempts
+ * @returns {Promise<object>} Response from leader or error
+ */
+async function forwardStrokeToLeader(strokeData, maxRetries = 3) {
+    let attempts = 0;
+    let lastError = null;
+    
+    while (attempts < maxRetries) {
+        attempts++;
+        
+        try {
+            // Ensure we know who the leader is
+            const leaderUrl = await ensureLeaderUrl();
+            
+            if (!leaderUrl) {
+                logInfo("No leader available, retrying", { 
+                    attempt: attempts, 
+                    maxRetries 
+                });
+                
+                // Wait before retry (exponential backoff)
+                await new Promise(resolve => setTimeout(resolve, 200 * attempts));
+                
+                // Force rediscovery on next attempt
+                knownLeaderUrl = null;
+                continue;
+            }
+            
+            // Forward stroke to leader's /client-stroke endpoint
+            logInfo("Forwarding stroke to leader", { 
+                leaderId: knownLeaderId,
+                attempt: attempts
+            });
+            
+            const response = await axios.post(
+                `${leaderUrl}/client-stroke`,
+                strokeData,
+                { timeout: 1000 }
+            );
+            
+            if (response.status === 200) {
+                strokesForwarded++;
+                logInfo("Stroke forwarded successfully", { 
+                    leaderId: knownLeaderId,
+                    strokeCount: strokesForwarded
+                });
+                
+                return { success: true, data: response.data };
+            }
+            
+            throw new Error(`Leader returned status ${response.status}`);
+            
+        } catch (error) {
+            lastError = error;
+            
+            logError(`Failed to forward stroke (attempt ${attempts})`, error);
+            
+            // Leader might have changed, force rediscovery
+            knownLeaderUrl = null;
+            knownLeaderId = null;
+            
+            if (attempts < maxRetries) {
+                // Wait before retry with exponential backoff
+                const backoff = 300 * Math.pow(2, attempts - 1);
+                await new Promise(resolve => setTimeout(resolve, backoff));
+            }
+        }
+    }
+    
+    // All retries exhausted
+    strokesFailed++;
+    logError("Failed to forward stroke after all retries", lastError);
+    
+    return { 
+        success: false, 
+        error: lastError.message || "Unknown error",
+        retriesExhausted: true
+    };
 }
 
 // ── WebSocket Connection Handling ──────────────────────────────────────────
@@ -67,7 +274,7 @@ wss.on("connection", (ws, req) => {
     }));
 
     // Handle incoming messages from browser
-    ws.on("message", (rawMessage) => {
+    ws.on("message", async (rawMessage) => {
         try {
             messageCount++;
             const message = JSON.parse(rawMessage.toString());
@@ -78,18 +285,50 @@ wss.on("connection", (ws, req) => {
                 messageNumber: messageCount 
             });
 
-            // Day 1: Echo back to sender (will be replaced with leader routing on Day 2)
-            ws.send(JSON.stringify({
-                type: "echo",
-                original: message,
-                timestamp: Date.now()
-            }));
+            // Day 2: Forward strokes to leader (not just echo)
+            if (message.type === "stroke" || message.type === "test") {
+                // Prepare stroke data for leader
+                const strokeData = {
+                    type: message.type,
+                    stroke: message.stroke || message.content,
+                    timestamp: Date.now(),
+                    clientId: clientId
+                };
+                
+                // Forward to leader
+                const result = await forwardStrokeToLeader(strokeData);
+                
+                if (result.success) {
+                    // Acknowledge to sender
+                    ws.send(JSON.stringify({
+                        type: "ack",
+                        message: "Stroke forwarded to leader",
+                        leaderId: knownLeaderId,
+                        timestamp: Date.now()
+                    }));
+                } else {
+                    // Notify sender of failure
+                    ws.send(JSON.stringify({
+                        type: "error",
+                        message: "Failed to forward stroke to leader",
+                        error: result.error,
+                        retry: true
+                    }));
+                }
+            } else {
+                // Other message types - echo back for now
+                ws.send(JSON.stringify({
+                    type: "echo",
+                    original: message,
+                    timestamp: Date.now()
+                }));
+            }
 
         } catch (error) {
-            logError("Failed to parse client message", error);
+            logError("Failed to process client message", error);
             ws.send(JSON.stringify({
                 type: "error",
-                message: "Invalid message format"
+                message: "Failed to process message"
             }));
         }
     });
@@ -129,9 +368,30 @@ app.get("/stats", (req, res) => {
         connectedClients: connectedClients.size,
         totalMessagesReceived: messageCount,
         totalBroadcasts: broadcastCount,
+        strokesForwarded: strokesForwarded,
+        strokesFailed: strokesFailed,
         knownLeader: knownLeaderId,
+        knownLeaderUrl: knownLeaderUrl,
         uptime: process.uptime()
     });
+});
+
+// Leader discovery endpoint (manual trigger)
+app.get("/discover-leader", async (req, res) => {
+    try {
+        const leaderUrl = await discoverLeader();
+        res.json({
+            success: !!leaderUrl,
+            leaderUrl: leaderUrl,
+            leaderId: knownLeaderId,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
 });
 
 // Serve simple test page for Day 1
@@ -270,6 +530,11 @@ app.get("/", (req, res) => {
     `);
 });
 
+// Serve Day 2 test page
+app.get("/test", (req, res) => {
+    res.sendFile(__dirname + "/test-day2.html");
+});
+
 // ── Server Startup ─────────────────────────────────────────────────────────
 
 server.listen(PORT, () => {
@@ -280,7 +545,7 @@ server.listen(PORT, () => {
     });
     console.log("");
     console.log("═══════════════════════════════════════════════════════════");
-    console.log("  Mini-RAFT Gateway Server - Day 1: WebSocket Foundation");
+    console.log("  Mini-RAFT Gateway Server - Day 2: Leader Discovery");
     console.log("═══════════════════════════════════════════════════════════");
     console.log(`  URL: http://localhost:${PORT}`);
     console.log(`  Connected Clients: 0`);
