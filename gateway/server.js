@@ -49,6 +49,29 @@ function logError(message, error) {
     console.error(`[${timestamp}] [GATEWAY] ERROR: ${message}`, error.message || error);
 }
 
+// ── WebSocket Safety Helper ───────────────────────────────────────────────
+
+/**
+ * Safely send message to WebSocket client
+ * Checks connection state before sending to prevent crashes
+ * @param {WebSocket} ws - WebSocket connection
+ * @param {object} data - Data to send
+ * @returns {boolean} - True if sent, false if failed
+ */
+function safeSend(ws, data) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        return false;
+    }
+    
+    try {
+        ws.send(JSON.stringify(data));
+        return true;
+    } catch (error) {
+        logError("Failed to send WebSocket message", error);
+        return false;
+    }
+}
+
 // ── Leader Discovery ───────────────────────────────────────────────────────
 
 /**
@@ -194,11 +217,13 @@ async function forwardStrokeToLeader(strokeData, maxRetries = 3) {
                     maxRetries 
                 });
                 
-                // Wait before retry (exponential backoff)
-                await new Promise(resolve => setTimeout(resolve, 200 * attempts));
+                // Wait before retry with exponential backoff
+                const backoff = 200 * Math.pow(2, attempts - 1);
+                await new Promise(resolve => setTimeout(resolve, backoff));
                 
-                // Force rediscovery on next attempt
+                // Force rediscovery on next attempt (clear both cached fields)
                 knownLeaderUrl = null;
+                knownLeaderId = null;
                 continue;
             }
             
@@ -266,12 +291,12 @@ wss.on("connection", (ws, req) => {
         ip: req.socket.remoteAddress 
     });
 
-    // Send welcome message
-    ws.send(JSON.stringify({
+    // Send welcome message (safe send)
+    safeSend(ws, {
         type: "welcome",
         message: "Connected to Mini-RAFT Gateway",
         clientId: clientId
-    }));
+    });
 
     // Handle incoming messages from browser
     ws.on("message", async (rawMessage) => {
@@ -299,37 +324,38 @@ wss.on("connection", (ws, req) => {
                 const result = await forwardStrokeToLeader(strokeData);
                 
                 if (result.success) {
-                    // Acknowledge to sender
-                    ws.send(JSON.stringify({
+                    // Acknowledge to sender (safe send - check connection state)
+                    safeSend(ws, {
                         type: "ack",
                         message: "Stroke forwarded to leader",
                         leaderId: knownLeaderId,
                         timestamp: Date.now()
-                    }));
+                    });
                 } else {
-                    // Notify sender of failure
-                    ws.send(JSON.stringify({
+                    // Notify sender of failure (safe send - check connection state)
+                    safeSend(ws, {
                         type: "error",
                         message: "Failed to forward stroke to leader",
                         error: result.error,
                         retry: true
-                    }));
+                    });
                 }
             } else {
-                // Other message types - echo back for now
-                ws.send(JSON.stringify({
+                // Other message types - echo back for now (safe send)
+                safeSend(ws, {
                     type: "echo",
                     original: message,
                     timestamp: Date.now()
-                }));
+                });
             }
 
         } catch (error) {
             logError("Failed to process client message", error);
-            ws.send(JSON.stringify({
+            // Safe send - connection may have closed during error
+            safeSend(ws, {
                 type: "error",
                 message: "Failed to process message"
-            }));
+            });
         }
     });
 

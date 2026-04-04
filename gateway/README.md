@@ -31,7 +31,46 @@ The Gateway is the traffic controller for the entire Mini-RAFT system. It:
 - [x] Added `/discover-leader` endpoint for manual trigger
 - [x] Created enhanced test UI (`/test` route)
 - [x] Added comprehensive error handling and exponential backoff
+- [x] Added `safeSend()` helper to prevent WebSocket crashes
+- [x] Fixed exponential backoff (was linear)
 - [x] **Deliverable**: Strokes forwarded to leader with automatic discovery ✓
+
+## ⚠️ Known Issues & Integration Dependencies
+
+### 🔴 Missing Replica Endpoint (Blocking Full Day 2 Testing)
+
+**Issue**: Gateway forwards strokes to `POST /client-stroke` endpoint, but replicas don't expose this endpoint yet.
+
+**Impact**: 
+- Leader discovery works ✅
+- Stroke forwarding will fail with HTTP 404 ❌
+- Cannot test end-to-end flow until replica endpoint exists
+
+**Owner**: Satwik Bankapur (replica implementation)
+
+**Scheduled Fix**: Day 4 in Satwik B's schedule
+
+**Required Endpoint**:
+```javascript
+// Replicas need to implement:
+app.post("/client-stroke", (req, res) => {
+    // Accept stroke from gateway
+    // Append to RAFT log
+    // Replicate to followers
+    // Return success/failure
+    res.json({ ok: true, /* ... */ });
+});
+```
+
+**Workaround**: Gateway code is correct and will work once endpoint is added. Currently documented as known limitation.
+
+**Tracking**: GitHub issue [to be created]
+
+### Other Dependencies
+
+- Day 3 (Broadcasting) depends on leader calling gateway's `/replica-commit` endpoint
+- Day 4 (Failover) depends on full RAFT election working
+- Full system testing requires all components integrated
 
 ### 🔜 Day 3: Broadcasting Committed Entries (PENDING)
 - [ ] Implement `POST /replica-commit` endpoint
