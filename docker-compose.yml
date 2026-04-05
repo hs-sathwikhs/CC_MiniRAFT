@@ -1,0 +1,55 @@
+version: "3.8"
+
+services:
+  gateway:
+    image: node:18
+    working_dir: /app
+    volumes:
+      - ./gateway:/app
+    command: sh -c "npm install && npm run dev"
+    environment:
+      - PORT=8080
+      - REPLICA_URLS=http://replica1:5001,http://replica2:5002,http://replica3:5003
+    ports:
+      - "8080:8080"
+    depends_on:
+      - replica1
+      - replica2
+      - replica3
+
+  replica1:
+    image: node:18
+    working_dir: /app
+    volumes:
+      - ./replica1:/app
+    command: sh -c "npm install && node index.js"
+    environment:
+      - REPLICA_ID=1
+      - PORT=5001
+    ports:
+      - "5001:5001"
+
+  replica2:
+    image: node:18
+    working_dir: /app
+    volumes:
+      - ./replica2:/app
+    command: sh -c "npm install && node index.js"
+    environment:
+      - REPLICA_ID=2
+      - PORT=5002
+    ports:
+      - "5002:5002"
+
+  replica3:
+    image: node:18
+    working_dir: /app
+    volumes:
+      - ./replica3:/app
+    command: sh -c "npm install && node index.js"
+    environment:
+      - REPLICA_ID=3
+      - PORT=5003
+    ports:
+      - "5003:5003"
+
