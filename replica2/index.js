@@ -3,61 +3,115 @@ const axios = require("axios");
 const app = express();
 app.use(express.json());
 
-// ── Node Identity ──────────────────────────────────────────
+// ==============================================================================
+// MiniRAFT Consensus Implementation - Satwik (Day 1-7 Complete)
+// ==============================================================================
+
+// -- Node Identity -------------------------------------------------------------
 const REPLICA_ID = process.env.REPLICA_ID || "2";
 const PORT = process.env.PORT || 5002;
 
-const OTHER_REPLICAS = {
-    "1": ["http://localhost:5002", "http://localhost:5003"],
-    "2": ["http://localhost:5001", "http://localhost:5003"],
-    "3": ["http://localhost:5001", "http://localhost:5002"],
-};
+// Detect environment: Docker uses service names, local uses localhost
+const IS_DOCKER = process.env.REPLICA_URLS || process.env.DOCKER_ENV;
 
-const PEERS = OTHER_REPLICAS[REPLICA_ID];
+const REPLICA_HOSTS = IS_DOCKER
+    ? { "1": "replica1", "2": "replica2", "3": "replica3" }
+    : { "1": "localhost", "2": "localhost", "3": "localhost" };
 
-// ── RAFT State ─────────────────────────────────────────────
+const REPLICA_PORTS = { "1": 5001, "2": 5002, "3": 5003 };
+
+function getPeerUrls() {
+    return Object.keys(REPLICA_HOSTS)
+        .filter((id) => id !== REPLICA_ID)
+        .map((id) => `http://${REPLICA_HOSTS[id]}:${REPLICA_PORTS[id]}`);
+}
+
+const PEERS = getPeerUrls();
+
+// -- RAFT Configuration --------------------------------------------------------
+const ELECTION_TIMEOUT_MIN = 500;
+const ELECTION_TIMEOUT_MAX = 800;
+const HEARTBEAT_INTERVAL = 150;
+const MAJORITY = 2;
+
+// -- RAFT State ----------------------------------------------------------------
 let state = {
     role: "follower",
     currentTerm: 0,
     votedFor: null,
-    log: [],          // each entry: { term, index, stroke }
+    log: [],
     commitIndex: -1,
+    lastApplied: -1,
     leaderId: null,
 };
 
-// ── Election Timer ─────────────────────────────────────────
+// Leader-only state
+let leaderState = {
+    nextIndex: {},
+    matchIndex: {},
+};
+
+// -- Timers --------------------------------------------------------------------
 let electionTimer = null;
+let heartbeatInterval = null;
 
 function getRandomTimeout() {
-    return Math.floor(Math.random() * 300) + 500;
+    return Math.floor(Math.random() * (ELECTION_TIMEOUT_MAX - ELECTION_TIMEOUT_MIN)) + ELECTION_TIMEOUT_MIN;
 }
 
 function resetElectionTimer() {
     if (electionTimer) clearTimeout(electionTimer);
+    const timeout = getRandomTimeout();
     electionTimer = setTimeout(() => {
         if (state.role !== "leader") {
-            console.log(`[Replica ${REPLICA_ID}] Timeout! Starting election...`);
+            log("ELECTION", `Election timeout (${timeout}ms) - starting election`);
             startElection();
         }
-    }, getRandomTimeout());
+    }, timeout);
 }
 
-// ── Election ───────────────────────────────────────────────
+function stopElectionTimer() {
+    if (electionTimer) {
+        clearTimeout(electionTimer);
+        electionTimer = null;
+    }
+}
+
+// -- Logging -------------------------------------------------------------------
+function log(category, message) {
+    const timestamp = new Date().toISOString().substr(11, 12);
+    const roleIcon = state.role === "leader" ? "[LEADER]" : state.role === "candidate" ? "[CAND]" : "[FOLLOWER]";
+    console.log(`[${timestamp}] [R${REPLICA_ID}|T${state.currentTerm}|${roleIcon}] [${category}] ${message}`);
+}
+
+// -- Step Down -----------------------------------------------------------------
+function stepDown(newTerm) {
+    if (newTerm > state.currentTerm) {
+        log("TERM", `Stepping down: discovered higher term ${newTerm} (was ${state.currentTerm})`);
+        state.currentTerm = newTerm;
+        state.role = "follower";
+        state.votedFor = null;
+        stopHeartbeat();
+        resetElectionTimer();
+    }
+}
+
+// ==============================================================================
+// ELECTION LOGIC (Day 2-3)
+// ==============================================================================
+
 async function startElection() {
     state.role = "candidate";
     state.currentTerm += 1;
     state.votedFor = REPLICA_ID;
     let votesReceived = 1;
 
-    console.log(`[Replica ${REPLICA_ID}] CANDIDATE for term ${state.currentTerm}`);
-
-    // Reset timer in case election fails (split vote)
+    log("ELECTION", `Starting election for term ${state.currentTerm}`);
     resetElectionTimer();
 
-    for (const peer of PEERS) {
+    const voteRequests = PEERS.map(async (peer) => {
         try {
             const lastLog = state.log[state.log.length - 1];
-
             const response = await axios.post(
                 `${peer}/request-vote`,
                 {
@@ -70,72 +124,105 @@ async function startElection() {
             );
 
             if (response.data.term > state.currentTerm) {
-                console.log(`[Replica ${REPLICA_ID}] Higher term, stepping down`);
-                state.role = "follower";
-                state.currentTerm = response.data.term;
-                state.votedFor = null;
-                resetElectionTimer();
-                return;
+                stepDown(response.data.term);
+                return false;
             }
 
             if (response.data.voteGranted) {
-                votesReceived += 1;
-                console.log(`[Replica ${REPLICA_ID}] Vote from ${peer} | Total: ${votesReceived}`);
+                log("ELECTION", `Vote granted from ${peer}`);
+                return true;
             }
+            return false;
         } catch (err) {
-            console.log(`[Replica ${REPLICA_ID}] Peer ${peer} unreachable for vote`);
+            log("ELECTION", `Peer ${peer} unreachable`);
+            return false;
         }
-    }
+    });
 
-    if (votesReceived >= 2 && state.role === "candidate") {
+    const results = await Promise.all(voteRequests);
+    votesReceived += results.filter(Boolean).length;
+
+    log("ELECTION", `Votes received: ${votesReceived}/${PEERS.length + 1}`);
+
+    if (votesReceived >= MAJORITY && state.role === "candidate") {
         becomeLeader();
-    } else {
-        console.log(`[Replica ${REPLICA_ID}] Lost election, back to follower`);
+    } else if (state.role === "candidate") {
+        log("ELECTION", `Election lost or split vote - will retry`);
         state.role = "follower";
         state.votedFor = null;
     }
 }
 
-// ── Leader ─────────────────────────────────────────────────
+// ==============================================================================
+// LEADER LOGIC (Day 3-4)
+// ==============================================================================
+
 function becomeLeader() {
     state.role = "leader";
     state.leaderId = REPLICA_ID;
-    if (electionTimer) clearTimeout(electionTimer);
-    console.log(`[Replica ${REPLICA_ID}] *** LEADER for term ${state.currentTerm} ***`);
+    stopElectionTimer();
+
+    leaderState.nextIndex = {};
+    leaderState.matchIndex = {};
+    for (const peer of PEERS) {
+        leaderState.nextIndex[peer] = state.log.length;
+        leaderState.matchIndex[peer] = -1;
+    }
+
+    log("LEADER", `*** BECAME LEADER for term ${state.currentTerm} ***`);
+    sendHeartbeats();
     startHeartbeat();
 }
 
-// ── Heartbeat Sender ───────────────────────────────────────
-let heartbeatInterval = null;
-
-function startHeartbeat() {
-    if (heartbeatInterval) clearInterval(heartbeatInterval);
-
-    heartbeatInterval = setInterval(async () => {
-        if (state.role !== "leader") {
-            clearInterval(heartbeatInterval);
-            return;
-        }
-        for (const peer of PEERS) {
-            try {
-                await axios.post(
-                    `${peer}/heartbeat`,
-                    { term: state.currentTerm, leaderId: REPLICA_ID },
-                    { timeout: 100 }
-                );
-            } catch (_) {}
-        }
-    }, 150);
+function stopHeartbeat() {
+    if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+    }
 }
 
-// ── Log Replication ────────────────────────────────────────
-// Called when gateway sends a stroke to the leader
+function startHeartbeat() {
+    stopHeartbeat();
+    heartbeatInterval = setInterval(() => {
+        if (state.role !== "leader") {
+            stopHeartbeat();
+            return;
+        }
+        sendHeartbeats();
+    }, HEARTBEAT_INTERVAL);
+}
+
+async function sendHeartbeats() {
+    for (const peer of PEERS) {
+        try {
+            const response = await axios.post(
+                `${peer}/heartbeat`,
+                { term: state.currentTerm, leaderId: REPLICA_ID, leaderCommit: state.commitIndex },
+                { timeout: 100 }
+            );
+
+            if (response.data.term > state.currentTerm) {
+                stepDown(response.data.term);
+                return;
+            }
+
+            if (response.data.needSync) {
+                log("SYNC", `Follower ${peer} needs sync from index ${response.data.logLength}`);
+                syncFollower(peer, response.data.logLength);
+            }
+        } catch (err) {}
+    }
+}
+
+// ==============================================================================
+// LOG REPLICATION (Day 4)
+// ==============================================================================
+
 async function replicateStroke(stroke) {
     if (state.role !== "leader") {
-        return { success: false, reason: "not leader" };
+        return { success: false, reason: "not leader", leaderId: state.leaderId };
     }
 
-    // Step 1: Append to own log first
     const newEntry = {
         term: state.currentTerm,
         index: state.log.length,
@@ -143,48 +230,108 @@ async function replicateStroke(stroke) {
         committed: false,
     };
     state.log.push(newEntry);
-    console.log(`[Replica ${REPLICA_ID}] Appended stroke to log at index ${newEntry.index}`);
+    log("REPLICATION", `Appended stroke to log at index ${newEntry.index}`);
 
-    // Step 2: Send to all followers
-    let acks = 1; // leader counts as 1
+    let acks = 1;
 
-    for (const peer of PEERS) {
+    const replicationPromises = PEERS.map(async (peer) => {
         try {
+            const prevLogIndex = newEntry.index - 1;
+            const prevLogTerm = prevLogIndex >= 0 ? state.log[prevLogIndex].term : 0;
+
             const response = await axios.post(
                 `${peer}/append-entries`,
                 {
                     term: state.currentTerm,
                     leaderId: REPLICA_ID,
-                    entry: newEntry,
-                    prevLogIndex: newEntry.index - 1,
-                    prevLogTerm: newEntry.index > 0 ? state.log[newEntry.index - 1].term : 0,
+                    entries: [newEntry],
+                    prevLogIndex,
+                    prevLogTerm,
                     leaderCommit: state.commitIndex,
                 },
                 { timeout: 300 }
             );
 
-            if (response.data.success) {
-                acks += 1;
-                console.log(`[Replica ${REPLICA_ID}] Ack from ${peer} | Total acks: ${acks}`);
+            if (response.data.term > state.currentTerm) {
+                stepDown(response.data.term);
+                return false;
             }
-        } catch (err) {
-            console.log(`[Replica ${REPLICA_ID}] Follower ${peer} unreachable during replication`);
-        }
-    }
 
-    // Step 3: Commit if majority acknowledged
-    if (acks >= 2) {
+            if (response.data.success) {
+                leaderState.nextIndex[peer] = newEntry.index + 1;
+                leaderState.matchIndex[peer] = newEntry.index;
+                log("REPLICATION", `Ack from ${peer}`);
+                return true;
+            } else if (response.data.needSync) {
+                log("REPLICATION", `Follower ${peer} needs sync`);
+                syncFollower(peer, response.data.logLength || 0);
+                return false;
+            }
+            return false;
+        } catch (err) {
+            log("REPLICATION", `Follower ${peer} unreachable`);
+            return false;
+        }
+    });
+
+    const results = await Promise.all(replicationPromises);
+    acks += results.filter(Boolean).length;
+
+    log("REPLICATION", `Acks received: ${acks}/${PEERS.length + 1}`);
+
+    if (acks >= MAJORITY) {
         state.log[newEntry.index].committed = true;
         state.commitIndex = newEntry.index;
-        console.log(`[Replica ${REPLICA_ID}] ✅ Stroke COMMITTED at index ${newEntry.index}`);
+        log("COMMIT", `Entry COMMITTED at index ${newEntry.index}`);
         return { success: true, entry: newEntry };
     } else {
-        console.log(`[Replica ${REPLICA_ID}] ❌ Not enough acks, stroke not committed`);
+        log("COMMIT", `Not enough acks - entry NOT committed`);
         return { success: false, reason: "no majority" };
     }
 }
 
-// ── Routes ─────────────────────────────────────────────────
+// ==============================================================================
+// LOG SYNC (Day 5)
+// ==============================================================================
+
+async function syncFollower(peer, fromIndex) {
+    if (state.role !== "leader") return;
+
+    const entriesToSend = state.log.slice(fromIndex);
+    if (entriesToSend.length === 0) return;
+
+    log("SYNC", `Sending ${entriesToSend.length} entries to ${peer} from index ${fromIndex}`);
+
+    try {
+        const prevLogIndex = fromIndex - 1;
+        const prevLogTerm = prevLogIndex >= 0 ? state.log[prevLogIndex].term : 0;
+
+        const response = await axios.post(
+            `${peer}/append-entries`,
+            {
+                term: state.currentTerm,
+                leaderId: REPLICA_ID,
+                entries: entriesToSend,
+                prevLogIndex,
+                prevLogTerm,
+                leaderCommit: state.commitIndex,
+            },
+            { timeout: 1000 }
+        );
+
+        if (response.data.success) {
+            leaderState.nextIndex[peer] = state.log.length;
+            leaderState.matchIndex[peer] = state.log.length - 1;
+            log("SYNC", `Follower ${peer} synced successfully`);
+        }
+    } catch (err) {
+        log("SYNC", `Failed to sync follower ${peer}`);
+    }
+}
+
+// ==============================================================================
+// HTTP ENDPOINTS
+// ==============================================================================
 
 app.get("/health", (req, res) => {
     res.json({
@@ -194,127 +341,168 @@ app.get("/health", (req, res) => {
         leader: state.leaderId,
         logLength: state.log.length,
         commitIndex: state.commitIndex,
+        peers: PEERS,
     });
 });
 
-// Gateway sends stroke to leader via this route
+app.get("/log", (req, res) => {
+    res.json({
+        replicaId: REPLICA_ID,
+        role: state.role,
+        term: state.currentTerm,
+        log: state.log,
+        commitIndex: state.commitIndex,
+    });
+});
+
+app.get("/committed", (req, res) => {
+    const fromIndex = parseInt(req.query.from) || 0;
+    const committed = state.log.filter((e, i) => i >= fromIndex && e.committed);
+    res.json({ entries: committed, commitIndex: state.commitIndex });
+});
+
 app.post("/stroke", async (req, res) => {
     const { stroke } = req.body;
 
     if (state.role !== "leader") {
-        return res.status(403).json({
-            success: false,
-            reason: "not leader",
-            leaderId: state.leaderId,
-        });
+        log("STROKE", `Not leader - redirecting to ${state.leaderId}`);
+        return res.status(403).json({ success: false, reason: "not leader", leaderId: state.leaderId });
     }
 
+    log("STROKE", `Received stroke from client`);
     const result = await replicateStroke(stroke);
     res.json(result);
 });
 
-// Follower receives vote request from candidate
 app.post("/request-vote", (req, res) => {
     const { term, candidateId, lastLogIndex, lastLogTerm } = req.body;
 
+    log("VOTE", `Vote request from ${candidateId} for term ${term}`);
+
     if (term < state.currentTerm) {
+        log("VOTE", `Rejected: old term ${term} < ${state.currentTerm}`);
         return res.json({ voteGranted: false, term: state.currentTerm });
     }
 
     if (term > state.currentTerm) {
-        state.currentTerm = term;
-        state.role = "follower";
-        state.votedFor = null;
+        stepDown(term);
     }
 
-    const canVote =
-        state.votedFor === null || state.votedFor === candidateId;
+    const canVote = state.votedFor === null || state.votedFor === candidateId;
 
-    // Log completeness check
-    // Only vote for candidate if their log is at least as complete as ours
     const myLastLog = state.log[state.log.length - 1];
     const myLastIndex = myLastLog ? myLastLog.index : -1;
     const myLastTerm = myLastLog ? myLastLog.term : 0;
 
-    const candidateLogOk =
-        lastLogTerm > myLastTerm ||
-        (lastLogTerm === myLastTerm && lastLogIndex >= myLastIndex);
+    const candidateLogOk = lastLogTerm > myLastTerm || (lastLogTerm === myLastTerm && lastLogIndex >= myLastIndex);
 
     if (canVote && candidateLogOk) {
         state.votedFor = candidateId;
-        console.log(`[Replica ${REPLICA_ID}] Voted for ${candidateId} in term ${term}`);
         resetElectionTimer();
+        log("VOTE", `Voted for ${candidateId} in term ${term}`);
         return res.json({ voteGranted: true, term: state.currentTerm });
     }
 
+    log("VOTE", `Vote denied to ${candidateId}`);
     return res.json({ voteGranted: false, term: state.currentTerm });
 });
 
-// Follower receives stroke entry from leader
 app.post("/append-entries", (req, res) => {
-    const { term, leaderId, entry, prevLogIndex, leaderCommit } = req.body;
+    const { term, leaderId, entries, prevLogIndex, prevLogTerm, leaderCommit } = req.body;
 
-    // Reject old leaders
     if (term < state.currentTerm) {
+        log("APPEND", `Rejected: old term ${term}`);
         return res.json({ success: false, term: state.currentTerm });
     }
 
-    // Valid leader, reset our timer
+    if (term > state.currentTerm) {
+        stepDown(term);
+    }
     state.role = "follower";
-    state.currentTerm = term;
     state.leaderId = leaderId;
-    state.votedFor = null;
     resetElectionTimer();
 
-    // Check log consistency
-    // If prevLogIndex exists, we must have that entry
-    if (prevLogIndex >= 0 && !state.log[prevLogIndex]) {
-        console.log(`[Replica ${REPLICA_ID}] Log mismatch at index ${prevLogIndex}, need sync`);
-        return res.json({
-            success: false,
-            term: state.currentTerm,
-            logLength: state.log.length,
-            needSync: true,
-        });
+    if (prevLogIndex >= 0) {
+        const prevEntry = state.log[prevLogIndex];
+        if (!prevEntry || prevEntry.term !== prevLogTerm) {
+            log("APPEND", `Log mismatch at index ${prevLogIndex}, need sync`);
+            return res.json({ success: false, term: state.currentTerm, logLength: state.log.length, needSync: true });
+        }
     }
 
-    // Append the new entry
-    state.log[entry.index] = entry;
-    console.log(`[Replica ${REPLICA_ID}] Appended entry at index ${entry.index}`);
+    if (entries && entries.length > 0) {
+        for (const entry of entries) {
+            if (state.log[entry.index] && state.log[entry.index].term !== entry.term) {
+                state.log = state.log.slice(0, entry.index);
+            }
+            state.log[entry.index] = entry;
+        }
+        log("APPEND", `Appended ${entries.length} entries (${entries[0].index}-${entries[entries.length-1].index})`);
+    }
 
-    // Update commit index if leader says so
     if (leaderCommit > state.commitIndex) {
-        state.commitIndex = Math.min(leaderCommit, entry.index);
-        console.log(`[Replica ${REPLICA_ID}] Commit index updated to ${state.commitIndex}`);
+        const lastNewIndex = entries && entries.length > 0 ? entries[entries.length - 1].index : state.log.length - 1;
+        state.commitIndex = Math.min(leaderCommit, lastNewIndex);
+        for (let i = 0; i <= state.commitIndex; i++) {
+            if (state.log[i]) state.log[i].committed = true;
+        }
+        log("COMMIT", `Commit index updated to ${state.commitIndex}`);
     }
 
     return res.json({ success: true, term: state.currentTerm });
 });
 
-// Leader sends heartbeat
 app.post("/heartbeat", (req, res) => {
-    const { term, leaderId } = req.body;
+    const { term, leaderId, leaderCommit } = req.body;
 
     if (term < state.currentTerm) {
         return res.json({ success: false, term: state.currentTerm });
     }
 
+    if (term > state.currentTerm) {
+        stepDown(term);
+    }
+
     state.role = "follower";
-    state.currentTerm = term;
     state.leaderId = leaderId;
-    state.votedFor = null;
     resetElectionTimer();
 
-    return res.json({ success: true, term: state.currentTerm });
+    if (leaderCommit !== undefined && leaderCommit > state.commitIndex) {
+        state.commitIndex = Math.min(leaderCommit, state.log.length - 1);
+        for (let i = 0; i <= state.commitIndex; i++) {
+            if (state.log[i]) state.log[i].committed = true;
+        }
+    }
+
+    const needSync = leaderCommit > state.log.length - 1;
+    return res.json({ success: true, term: state.currentTerm, needSync, logLength: state.log.length });
 });
 
-// Placeholder — Day 5
 app.post("/sync-log", (req, res) => {
-    res.json({ entries: [] });
+    const { fromIndex } = req.body;
+
+    if (state.role !== "leader") {
+        return res.json({ success: false, reason: "not leader", leaderId: state.leaderId });
+    }
+
+    const entries = state.log.slice(fromIndex || 0);
+    log("SYNC", `Sync request: sending ${entries.length} entries from index ${fromIndex || 0}`);
+    return res.json({ success: true, entries, commitIndex: state.commitIndex, term: state.currentTerm });
 });
 
-// ── Start ──────────────────────────────────────────────────
+app.get("/sync-log", (req, res) => {
+    const fromIndex = parseInt(req.query.from) || 0;
+    const entries = state.log.slice(fromIndex);
+    return res.json({ entries, commitIndex: state.commitIndex, term: state.currentTerm, role: state.role });
+});
+
+// ==============================================================================
+// STARTUP
+// ==============================================================================
+
 app.listen(PORT, () => {
-    console.log(`[Replica ${REPLICA_ID}] Started on port ${PORT}`);
+    log("STARTUP", `Replica ${REPLICA_ID} started on port ${PORT}`);
+    log("STARTUP", `Peers: ${PEERS.join(", ")}`);
+    log("STARTUP", `Election timeout: ${ELECTION_TIMEOUT_MIN}-${ELECTION_TIMEOUT_MAX}ms, Heartbeat: ${HEARTBEAT_INTERVAL}ms`);
     resetElectionTimer();
 });
