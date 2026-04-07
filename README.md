@@ -50,10 +50,10 @@ This project demonstrates a production-grade implementation of the RAFT consensu
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    RAFT Cluster                             │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐             │
-│  │ Replica1 │    │ Replica2 │    │ Replica3 │             │
-│  │ (5001)   │◄──►│ (5002)   │◄──►│ (5003)   │             │
-│  └──────────┘    └──────────┘    └──────────┘             │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐               │
+│  │ Replica1 │    │ Replica2 │    │ Replica3 │               │
+│  │ (5001)   │◄──►│ (5002)   │◄──►│ (5003)   │               │
+│  └──────────┘    └──────────┘    └──────────┘               │
 │       │               │               │                     │
 │   Leader         Follower        Follower                   │
 │   (elected)                                                 │
@@ -397,29 +397,3 @@ Structured logs with timestamps in `logs/` directory. Format:
 
 For more issues, see component-specific READMEs and documentation in `docs/`.
 
----
-
-## 📝 License
-
-This project is part of a distributed systems course. Educational use only.
-
----
-
-## 🙏 Acknowledgments
-
-- **RAFT Paper**: Diego Ongaro and John Ousterhout - [In Search of an Understandable Consensus Algorithm](https://raft.github.io/raft.pdf)
-- **Course Instructor**: [Instructor Name]
-- **Institution**: [University Name]
-
----
-
-## 📞 Contact & Support
-
-For questions or issues:
-- Open an issue on GitHub
-- Contact team members via university email
-- Refer to component-specific READMEs for detailed documentation
-
----
-
-**Built with ❤️ using RAFT consensus algorithm**
