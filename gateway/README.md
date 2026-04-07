@@ -1,204 +1,172 @@
-# Mini-RAFT Gateway
+# MiniRAFT Gateway
+
+A WebSocket gateway server that routes client drawing strokes to a RAFT-based consensus cluster and broadcasts committed entries to all connected clients in real-time.
 
 **Author**: Sathwik HS  
-**Component**: WebSocket Gateway for RAFT-based Collaborative Drawing Board
+**Part of**: MiniRAFT Collaborative Drawing Board
+
+---
 
 ## Overview
 
-The Gateway is the traffic controller for the entire Mini-RAFT system. It:
-- Accepts WebSocket connections from multiple browser clients
-- Routes drawing strokes to the current RAFT leader replica
-- Polls for committed entries and broadcasts them to all connected clients
-- Handles leader failovers transparently without disconnecting clients
+The Gateway acts as a traffic controller between browser clients and the RAFT replica cluster. It handles:
 
-## Development Progress
+- **Client Connections**: Accepts WebSocket connections from multiple browser clients
+- **Stroke Routing**: Forwards drawing strokes to the current RAFT leader for replication
+- **Leader Discovery**: Automatically discovers and tracks the current cluster leader
+- **Broadcasting**: Polls for committed entries and broadcasts them to all connected clients
+- **Failover Handling**: Transparently handles leader failures and elections without disconnecting clients
+- **State Synchronization**: Sends full canvas history to newly connected clients
 
-### ✅ Day 1: WebSocket Foundation (COMPLETED)
-- [x] Created `/gateway` folder structure
-- [x] Set up `package.json` with dependencies (express, ws, axios)
-- [x] Built WebSocket server accepting multiple connections
-- [x] Implemented connection/disconnection handling
-- [x] Created test UI for manual testing
-- [x] Added logging for all events
-- [x] **Deliverable**: Gateway accepts WebSocket connections and echoes messages ✓
-
-### ✅ Day 2: Leader Discovery & Routing (COMPLETED)
-- [x] Implemented `fetchReplicaStatus()` - poll individual replica health
-- [x] Implemented `discoverLeader()` - find current leader from all replicas
-- [x] Implemented `ensureLeaderUrl()` - cached leader with auto-discovery
-- [x] Implemented `forwardStrokeToLeader()` - route strokes with retry logic
-- [x] Updated WebSocket handler to forward strokes instead of echo
-- [x] Added `/discover-leader` endpoint for manual trigger
-- [x] Created enhanced test UI (`/test` route)
-- [x] Added comprehensive error handling and exponential backoff
-- [x] Added `safeSend()` helper to prevent WebSocket crashes
-- [x] Fixed exponential backoff (was linear)
-- [x] **Deliverable**: Strokes forwarded to leader with automatic discovery ✓
-
-### ✅ Day 3: Broadcasting Committed Entries (COMPLETED)
-- [x] Fixed endpoint mismatch: `/client-stroke` → `/stroke` (matches replica API)
-- [x] Implemented `pollCommittedEntries()` - fetch new commits every 200ms
-- [x] Implemented `broadcastStroke()` - send strokes to all WebSocket clients
-- [x] Added stroke history cache with deduplication
-- [x] Implemented full-log sync on client connection
-- [x] Added broadcasting metrics to `/stats` endpoint
-- [x] Started commit polling on server startup
-- [x] Removed test artifacts (test-day2.html)
-- [x] **Deliverable**: Real-time stroke synchronization across all clients ✓
-
-### ✅ Day 4: Failover & Health Monitoring (COMPLETED)
-- [x] Implemented periodic leader health checks (every 5 seconds)
-- [x] Added automatic leader rediscovery on failure detection
-- [x] Implemented failure threshold (2 consecutive failures)
-- [x] Enhanced error handling during elections
-- [x] Added graceful shutdown for monitoring intervals
-- [x] Updated `/stats` endpoint with failover metrics
-- [x] **Deliverable**: Seamless failover with zero client disconnections ✓
+---
 
 ## Architecture
 
-### Data Flow (Day 3-4)
+### System Flow
 
 ```
-Frontend Canvas
-    │
-    │ WebSocket: { type: "stroke", stroke: {...} }
-    ↓
-Gateway (port 8080)
-    │
-    │ HTTP POST /stroke
-    ↓
-RAFT Leader (port 5001/5002/5003)
-    │
-    │ Replicates to followers
-    │ Commits when majority acknowledges
-    ↓
-Gateway polls /committed (200ms intervals)
-    │
-    │ Detects new commits
-    │ Broadcasts to all clients
-    ↓
-All Frontend Clients
-    │
-    └─ Real-time synchronized drawing
-    
-┌─────────────────────────────────┐
-│ Background: Health Monitoring   │
-│ - Checks leader every 5s        │
-│ - Detects failures (2x timeout) │
-│ - Auto-rediscovers new leader   │
-│ - No client disconnections      │
-└─────────────────────────────────┘
+┌─────────────────┐
+│ Browser Client  │ ──WebSocket──┐
+└─────────────────┘              │
+                                 │
+┌─────────────────┐              │      ┌──────────────────┐
+│ Browser Client  │ ──WebSocket──┼─────▶│  Gateway (8080)  │
+└─────────────────┘              │      └──────────────────┘
+                                 │              │
+┌─────────────────┐              │              │ HTTP POST /stroke
+│ Browser Client  │ ──WebSocket──┘              ▼
+└─────────────────┘                    ┌──────────────────┐
+                                       │  RAFT Leader     │
+                                       │  (5001/5002/5003)│
+                                       └──────────────────┘
+                                                │
+                                                │ Replicate
+                                                ▼
+                                       ┌──────────────────┐
+                                       │  RAFT Followers  │
+                                       └──────────────────┘
+                                                │
+                                                │ Commit (majority)
+                                                ▼
+                                       Gateway polls /committed
+                                       (every 200ms)
+                                                │
+                                                ▼
+                                       Broadcast to all clients
 ```
 
-### Polling Strategy
+### Key Components
 
-Instead of callbacks, the gateway uses **active polling**:
-- Polls `/committed?fromIndex=N` every 200ms
-- Tracks last seen commit index
+**Leader Discovery**
+- Polls all replicas' `/health` endpoints to find current leader
+- Caches leader URL to minimize discovery overhead
+- Automatically rediscovers on forwarding failures
+
+**Commit Polling**
+- Fetches newly committed entries from leader every 200ms
+- Uses incremental fetching (tracks last seen commit index)
 - Deduplicates using `{term}-{index}` keys
-- Low latency (~200ms) for stroke appearance
+- Prevents request overlap with in-flight guard
 
-**Why polling?** No changes needed to replica code - works with existing API.
+**Health Monitoring**
+- Checks leader health every 5 seconds
+- Detects leader failures (2 consecutive timeouts)
+- Triggers automatic rediscovery
+- No client disconnections during failover
 
-### Failover Strategy (Day 4)
+**Memory Management**
+- Stroke history capped at 1,000 entries
+- Automatically trims oldest strokes
+- Prevents unbounded growth in long sessions
 
-The gateway handles leader failures transparently:
+---
 
-**Detection:**
-- Health check every 5 seconds via `/health` endpoint
-- Verifies replica still has `role: "leader"`
-- 2 consecutive failures trigger rediscovery
-
-**Recovery:**
-1. Clear cached leader URL/ID
-2. Run `discoverLeader()` to find new leader
-3. Resume polling and forwarding automatically
-4. Clients stay connected throughout failover
-
-**During Elections:**
-- Commit polling gracefully handles timeouts
-- Stroke forwarding retries with exponential backoff
-- No error spam in logs during normal elections
-
-### 🔜 Day 5: Dashboard & Monitoring (PENDING)
-- [ ] Create `dashboard.html`
-- [ ] Cluster status visualization
-- [ ] Statistics endpoints
-- [ ] Real-time monitoring UI
-
-### 🔜 Day 6: Polish & Edge Cases (PENDING)
-- [ ] Comprehensive error handling
-- [ ] Edge case coverage
-- [ ] Code documentation
-- [ ] Integration testing
-
-## How to Run
+## Quick Start
 
 ### Prerequisites
+
 - Node.js 18+ installed
 - npm or yarn package manager
-- Replica servers running on ports 5001, 5002, 5003
+- RAFT replica cluster running (ports 5001, 5002, 5003)
 
 ### Installation
+
 ```bash
 cd gateway
 npm install
 ```
 
-### Start Server
+### Configuration
+
+Set environment variables (optional):
+
+```bash
+# Gateway port (default: 8080)
+export PORT=8080
+
+# Replica URLs (comma-separated)
+export REPLICA_URLS="http://localhost:5001,http://localhost:5002,http://localhost:5003"
+```
+
+For Docker deployment:
+```bash
+export REPLICA_URLS="http://replica1:5001,http://replica2:5002,http://replica3:5003"
+```
+
+### Running
+
+**Development mode** (with auto-reload):
 ```bash
 npm start
 ```
 
-The server will start on port 8080. Nodemon will auto-reload on code changes.
+**Production mode**:
+```bash
+npm run prod
+```
 
-### Test the Gateway
+The server will start on `http://localhost:8080`
 
-#### Option 1: Enhanced Day 2 Test UI (Recommended)
-1. **Open browser**: Navigate to `http://localhost:8080/test`
-2. **Click "Find Leader"**: Discover current RAFT leader
-3. **Send test strokes**: Type message and click "Send Stroke"
-4. **Monitor stats**: View sent/acknowledged/error counts
+### Stopping
 
-#### Option 2: Original Test UI
-1. **Open browser**: Navigate to `http://localhost:8080`
-2. **Use basic interface**: Test WebSocket connection
+Press `Ctrl+C` or send `SIGTERM` for graceful shutdown.
 
-### API Endpoints (Day 2)
+---
 
-#### `GET /`
-Original test UI page with WebSocket connection demo
+## API Reference
 
-#### `GET /test`
-Enhanced Day 2 test UI with leader discovery and stroke routing
+### HTTP Endpoints
 
 #### `GET /health`
-Returns gateway health status
+Returns gateway health status.
+
+**Response:**
 ```json
 {
   "status": "healthy",
   "service": "miniraft-gateway",
-  "connectedClients": 2,
+  "connectedClients": 3,
   "uptime": 123.45,
-  "timestamp": "2026-04-04T15:00:00.000Z"
+  "timestamp": "2026-04-07T03:00:00.000Z"
 }
 ```
 
 #### `GET /stats`
-Returns gateway statistics (updated for Day 4)
+Returns detailed gateway statistics.
+
+**Response:**
 ```json
 {
-  "connectedClients": 2,
-  "totalMessagesReceived": 15,
-  "totalBroadcasts": 12,
-  "strokesForwarded": 8,
+  "connectedClients": 3,
+  "totalMessagesReceived": 150,
+  "totalBroadcasts": 120,
+  "strokesForwarded": 80,
   "strokesFailed": 2,
   "knownLeader": "1",
   "knownLeaderUrl": "http://localhost:5001",
-  "committedStrokesSeen": 12,
-  "lastCommitIndex": 11,
-  "strokeHistorySize": 12,
+  "committedStrokesSeen": 120,
+  "lastCommitIndex": 119,
+  "strokeHistorySize": 120,
   "pollingActive": true,
   "healthMonitoringActive": true,
   "leaderFailureCount": 0,
@@ -208,32 +176,73 @@ Returns gateway statistics (updated for Day 4)
 ```
 
 #### `GET /discover-leader`
-Manually trigger leader discovery (new in Day 2)
+Manually trigger leader discovery (returns current leader).
+
+**Response:**
 ```json
 {
   "success": true,
   "leaderUrl": "http://localhost:5001",
   "leaderId": "1",
-  "timestamp": "2026-04-04T15:00:00.000Z"
+  "timestamp": "2026-04-07T03:00:00.000Z"
 }
 ```
 
-#### WebSocket Messages (Day 3)
+---
 
-**Client Sends Stroke:**
-```javascript
-ws.send(JSON.stringify({
-  type: 'stroke',
-  clientId: 'client-abc123',
-  stroke: {
-    x0: 100, y0: 150,
-    x1: 105, y1: 155,
-    color: '#ff0000'
+### WebSocket Protocol
+
+**Connection**: `ws://localhost:8080`
+
+#### Client → Gateway Messages
+
+**Send Drawing Stroke:**
+```json
+{
+  "type": "stroke",
+  "clientId": "client-abc123",
+  "stroke": {
+    "x0": 100,
+    "y0": 150,
+    "x1": 105,
+    "y1": 155,
+    "color": "#ff0000"
   }
-}));
+}
 ```
 
-**Gateway Broadcasts Committed Stroke:**
+#### Gateway → Client Messages
+
+**Welcome (on connect):**
+```json
+{
+  "type": "welcome",
+  "message": "Connected to Mini-RAFT Gateway",
+  "clientId": "client-abc123"
+}
+```
+
+**Full Canvas History (on connect):**
+```json
+{
+  "type": "full-log",
+  "strokes": [
+    {
+      "x0": 10, "y0": 20,
+      "x1": 15, "y1": 25,
+      "color": "#00ff00"
+    },
+    {
+      "x0": 100, "y0": 150,
+      "x1": 105, "y1": 155,
+      "color": "#ff0000"
+    }
+  ],
+  "count": 2
+}
+```
+
+**Committed Stroke Broadcast:**
 ```json
 {
   "type": "stroke",
@@ -245,19 +254,7 @@ ws.send(JSON.stringify({
 }
 ```
 
-**On Connection - Full Canvas Sync:**
-```json
-{
-  "type": "full-log",
-  "strokes": [
-    { "x0": 10, "y0": 20, "x1": 15, "y1": 25, "color": "#00ff00" },
-    { "x0": 100, "y0": 150, "x1": 105, "y1": 155, "color": "#ff0000" }
-  ],
-  "count": 2
-}
-```
-
-**Receive Error:**
+**Error:**
 ```json
 {
   "type": "error",
@@ -267,113 +264,248 @@ ws.send(JSON.stringify({
 }
 ```
 
+---
+
+## Integration with RAFT Cluster
+
+### Required Replica Endpoints
+
+The gateway expects the following endpoints on each replica:
+
+**`GET /health`**
+- Returns: `{ replicaId, role, term, leader, logLength }`
+- Used for: Leader discovery
+
+**`POST /stroke`**
+- Body: `{ stroke: {...} }`
+- Returns: `{ success: true/false, entry?: {...} }`
+- Used for: Forwarding client strokes to leader
+
+**`GET /committed?from=N`**
+- Query param: `from` (start index, inclusive)
+- Returns: `{ entries: [...], commitIndex: N }`
+- Used for: Polling committed entries
+
+---
+
+## Design Decisions
+
+### Why Polling Instead of Callbacks?
+
+**Polling Strategy:**
+- No changes needed to replica code
+- Works with existing RAFT API
+- Simple coordination between components
+- 200ms latency is acceptable for drawing
+
+**Alternatives Considered:**
+- Push-based (requires `/replica-commit` endpoint on gateway)
+- WebHooks (adds complexity)
+- Long-polling (unnecessary for this use case)
+
+### Why Cache Leader?
+
+- Reduces discovery overhead (no need to poll all replicas per stroke)
+- Invalidated automatically on forwarding failures
+- Periodic health checks detect stale cache
+
+### Why In-Flight Guard?
+
+- Prevents request storms under load
+- 200ms interval + 500ms timeout could overlap
+- Guarantees single concurrent poll
+
+### Why Cap Stroke History?
+
+- Prevents unbounded memory growth
+- 1,000 strokes ≈ reasonable canvas snapshot
+- Could be replaced with server-side canvas rendering
+
+---
+
+## Monitoring & Observability
+
+### Logging
+
+All logs follow this format:
+```
+[timestamp] [GATEWAY] [category] message {data}
+```
+
+**Example:**
+```
+[2026-04-07T03:00:00.000Z] [GATEWAY] New client connected {"clientId":"client-123","totalClients":3}
+```
+
+### Metrics (via `/stats`)
+
+**Connection Metrics:**
+- `connectedClients`: Current WebSocket connections
+- `totalMessagesReceived`: Lifetime message count
+
+**Forwarding Metrics:**
+- `strokesForwarded`: Successfully forwarded to leader
+- `strokesFailed`: Failed forwarding attempts
+
+**Broadcasting Metrics:**
+- `totalBroadcasts`: Strokes sent to clients
+- `committedStrokesSeen`: Unique committed entries
+- `strokeHistorySize`: Current history size
+
+**Health Metrics:**
+- `pollingActive`: Commit polling running
+- `healthMonitoringActive`: Leader health checks running
+- `leaderFailureCount`: Consecutive failures
+- `lastHealthCheck`: Timestamp of last success
+
+---
+
+## Production Considerations
+
+### Scaling
+
+**Horizontal Scaling:**
+- Not currently supported (single gateway instance)
+- Multiple gateways would need shared state or sticky sessions
+- Consider Redis pub/sub for multi-gateway broadcast
+
+**Vertical Scaling:**
+- Low CPU/memory footprint
+- Primarily I/O bound (WebSocket + HTTP)
+- Can handle hundreds of clients per instance
+
+### Security
+
+**Current State:**
+- No authentication/authorization
+- No TLS/SSL (assumes reverse proxy)
+- No rate limiting
+- No input validation
+
+**Production Recommendations:**
+- Add WebSocket authentication (JWT tokens)
+- Use WSS (WebSocket over TLS)
+- Implement rate limiting per client
+- Add input validation for stroke data
+- Use reverse proxy (nginx/traefik) for TLS termination
+
+### Error Handling
+
+**Graceful Degradation:**
+- Stroke forwarding retries (3 attempts, exponential backoff)
+- Commit polling tolerates leader downtime
+- Health checks trigger automatic rediscovery
+- Clients auto-reconnect on disconnection
+
+**Known Limitations:**
+- No request queueing during elections
+- No partial stroke recovery on failure
+- No persistent stroke history (memory-only)
+
+---
+
+## Troubleshooting
+
+### Gateway can't find leader
+
+**Symptoms**: All stroke forwards fail, `/stats` shows `knownLeader: null`
+
+**Solutions:**
+1. Check replicas are running: `curl http://localhost:5001/health`
+2. Verify `REPLICA_URLS` environment variable
+3. Check replica logs for election issues
+4. Manually trigger discovery: `curl http://localhost:8080/discover-leader`
+
+### Strokes not appearing for other clients
+
+**Symptoms**: Drawing works locally but not synced
+
+**Solutions:**
+1. Check `/stats` - is `pollingActive: true`?
+2. Check replica leader has committed entries: `curl http://localhost:5001/committed?from=0`
+3. Check browser console for WebSocket errors
+4. Verify query parameter is correct (`from` not `fromIndex`)
+
+### Memory usage growing
+
+**Symptoms**: Gateway memory increases over time
+
+**Solutions:**
+1. Check `strokeHistorySize` in `/stats` - should cap at 1,000
+2. Check for memory leaks in Node.js (use `--inspect`)
+3. Restart gateway periodically (Docker restart policy)
+4. Verify trimming logs appear after 1,000 strokes
+
+### WebSocket connections dropping
+
+**Symptoms**: Clients disconnect frequently
+
+**Solutions:**
+1. Check reverse proxy timeout settings
+2. Increase client reconnect max attempts
+3. Add WebSocket ping/pong keepalives
+4. Check network stability
+
+---
+
+## Development
+
+### Project Structure
+
+```
+gateway/
+├── server.js           # Main server implementation
+├── package.json        # Dependencies and scripts
+├── nodemon.json        # Auto-reload configuration
+├── .gitignore          # Git ignore rules
+└── README.md           # This file
+```
+
+### Dependencies
+
+- **express**: HTTP server framework
+- **ws**: WebSocket server implementation
+- **axios**: HTTP client for replica communication
+- **nodemon** (dev): Auto-reload on file changes
+
+### Testing
+
+**Manual Testing:**
+1. Start 3 replicas on ports 5001-5003
+2. Start gateway: `npm start`
+3. Open frontend in multiple browser tabs
+4. Draw in one tab, verify appears in others
+5. Kill leader replica, verify failover works
+
+**Automated Testing:**
+```bash
+# TODO: Add integration tests
+npm test
+```
+
+---
+
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` | 8080 | Gateway HTTP/WebSocket port |
+| `PORT` | `8080` | Gateway HTTP/WebSocket port |
 | `REPLICA_URLS` | `http://localhost:5001,http://localhost:5002,http://localhost:5003` | Comma-separated replica URLs |
-
-## Architecture (Day 2)
-
-```
-Browser Clients (WebSocket)
-        ↓
-    Gateway Server (THIS)
-        ↓
- discoverLeader() ← polls all replicas
-        ↓
- ensureLeaderUrl() ← caches result
-        ↓
- forwardStrokeToLeader() ← routes to /client-stroke
-        ↓
-  Leader Processes Stroke
-        ↓
- (Day 3: Leader Commits & Notifies Gateway)
-        ↓
- (Day 3: Gateway Broadcasts to All Clients)
-```
-
-## Key Functions (Day 2)
-
-### `fetchReplicaStatus(url)`
-Polls a single replica's `/health` endpoint with 500ms timeout.
-Returns health status, role, term, and leader info.
-
-### `discoverLeader()`
-Polls all replicas in parallel to find current leader.
-Returns leader URL or null if no leader elected.
-Caches result in `knownLeaderUrl` and `knownLeaderId`.
-
-### `ensureLeaderUrl()`
-Returns cached leader URL if available, otherwise triggers discovery.
-Used before every stroke forward operation.
-
-### `forwardStrokeToLeader(strokeData, maxRetries=3)`
-Forwards stroke to leader's `/client-stroke` endpoint.
-Implements exponential backoff retry logic.
-Auto-rediscovers leader on failure.
-Returns success/failure status.
-
-## File Structure
-
-```
-gateway/
-├── server.js          # Main gateway server (Day 2 ✓)
-├── test-day2.html     # Enhanced test UI (Day 2 ✓)
-├── package.json       # Dependencies
-├── nodemon.json       # Auto-reload config
-├── .gitignore         # Git ignore rules
-└── README.md          # This file
-```
-
-## Dependencies
-
-- **express**: HTTP server framework
-- **ws**: WebSocket library
-- **axios**: HTTP client for replica communication
-- **nodemon**: Dev dependency for auto-reload
-
-## Testing Checklist - Day 2
-
-- [x] Leader discovery works when leader exists
-- [x] Discovery returns null when no leader
-- [x] Strokes forward to leader successfully
-- [x] Retry logic works on failure
-- [x] Exponential backoff implemented
-- [x] WebSocket acknowledgments sent
-- [x] Error messages sent on failure
-- [x] Stats endpoint shows forwarding counts
-- [x] Test UI displays leader information
-- [x] Manual discovery endpoint works
-
-## Integration Notes
-
-### Expected Replica Endpoints (Day 2)
-
-Replicas must implement:
-- `GET /health` - Returns `{ replicaId, role, term, leader, logLength }`
-- `POST /client-stroke` - Accepts stroke data (to be tested on Day 3)
-
-### Testing with Replicas
-
-1. Start all 3 replicas on ports 5001, 5002, 5003
-2. One replica should become leader via election
-3. Gateway will auto-discover the leader
-4. Send strokes via test UI
-5. Verify strokes reach leader (check replica logs)
-
-## Next Steps
-
-Tomorrow (Day 3), we will:
-1. Implement `/replica-commit` endpoint (called by leader)
-2. Add committed entry caching with deduplication
-3. Implement broadcast function to all WebSocket clients
-4. Test real-time sync across multiple browser tabs
 
 ---
 
-**Status**: Day 2 Complete ✅  
-**Next**: Day 3 - Broadcasting Committed Entries  
-**Estimated Completion**: Day 6 (On Schedule)
+## License
 
+Part of MiniRAFT project - Educational implementation of RAFT consensus algorithm.
+
+---
+
+## Contributing
+
+This is a course project. For issues or improvements, contact the development team.
+
+**Team Members:**
+- Sathwik HS
+- Satwik Bankapur
+- Prajwal
+- Sudarshan
