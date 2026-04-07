@@ -18,7 +18,8 @@ const clientInfoEl = document.getElementById("clientInfo");
 const clientSwatch = document.getElementById("clientSwatch");
 
 const protocol = globalThis.location.protocol === "https:" ? "wss" : "ws";
-const defaultGatewayHost = "localhost:8080";
+const effectiveHostname = globalThis.location.hostname || "localhost";
+const defaultGatewayHost = `${effectiveHostname}:8080`;
 const gatewayHost = new URLSearchParams(globalThis.location.search).get("gateway") || defaultGatewayHost;
 const wsUrl = `${protocol}://${gatewayHost}`;
 
@@ -44,8 +45,13 @@ const strokeBatch = [];
 const seenSegmentKeys = new Set();
 const remoteRenderQueue = [];
 let remoteRenderFrame = null;
+let offlineQueueNoticeShown = false;
+
+const MAX_RENDERED_SEGMENTS = 2000;
+const MAX_OFFLINE_BATCH = 1000;
 
 const STORAGE_KEY = "miniraft-canvas";
+const MAX_LOCAL_STORAGE_BYTES = 900000;
 
 const clientId = Math.random().toString(36).slice(2, 11);
 const initialColor = colorPicker?.value || "#0b7a75";
@@ -56,7 +62,6 @@ resizeCanvas();
 setMode("pen");
 setStatus("Connecting...", "#5f6f79");
 
-loadFromLocalStorage();
 connectWebSocket();
 
 window.addEventListener("resize", debounce(resizeCanvas, 120));
@@ -64,6 +69,11 @@ window.addEventListener("resize", debounce(resizeCanvas, 120));
 // Cleanup on page unload
 window.addEventListener("beforeunload", () => {
   stopHeartbeat();
+  remoteRenderQueue.length = 0;
+  if (remoteRenderFrame) {
+    cancelAnimationFrame(remoteRenderFrame);
+    remoteRenderFrame = null;
+  }
   if (reconnectTimeout) {
     clearTimeout(reconnectTimeout);
   }
@@ -130,6 +140,7 @@ function connectWebSocket() {
 
   ws.onopen = () => {
     reconnectAttempts = 0;
+    offlineQueueNoticeShown = false;
     setStatus("Connected", "#1f9d55");
     startHeartbeat();
     flushStrokeBatch();
@@ -143,7 +154,12 @@ function connectWebSocket() {
 
   ws.onmessage = (event) => {
     try {
-      const data = JSON.parse(event.data);
+      const rawData = JSON.parse(event.data);
+      const data = normalizeGatewayMessage(rawData);
+
+      if (!data) {
+        return;
+      }
 
       // Handle pong for latency monitoring
       if (data.type === "pong") {
@@ -172,25 +188,13 @@ function connectWebSocket() {
           return;
         }
 
-        if (shouldSkipRemoteSegment(data.stroke)) {
-          return;
-        }
-
-        rememberSegment(data.stroke);
-        renderedSegments.push(data.stroke);
-        enqueueRemoteSegment(data.stroke);
+        acceptRemoteSegment(data.stroke);
         syncStrokeStats();
       }
 
       if (data.type === "stroke-batch" && Array.isArray(data.strokes)) {
         data.strokes.forEach((segment) => {
-          if (!segment || shouldSkipRemoteSegment(segment)) {
-            return;
-          }
-
-          rememberSegment(segment);
-          renderedSegments.push(segment);
-          enqueueRemoteSegment(segment);
+          acceptRemoteSegment(segment);
         });
         syncStrokeStats();
       }
@@ -230,6 +234,7 @@ function connectWebSocket() {
     
     if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
       setStatus("Disconnected (max retries)", "#d94848");
+      loadFromLocalStorage();
       showToast("Connection lost. Please refresh the page.", "error");
       return;
     }
@@ -401,9 +406,16 @@ function drawSegment(segment) {
 
 function sendStroke(segment) {
   if (ws?.readyState !== WebSocket.OPEN) {
-    // Queue for later if offline
+    // Queue for later if offline and keep memory bounded.
+    if (strokeBatch.length >= MAX_OFFLINE_BATCH) {
+      strokeBatch.shift();
+    }
     strokeBatch.push(segment);
-    showToast("Offline - stroke queued", "warning");
+
+    if (!offlineQueueNoticeShown) {
+      showToast("Offline - strokes are being queued", "warning");
+      offlineQueueNoticeShown = true;
+    }
     return;
   }
 
@@ -433,6 +445,8 @@ function flushStrokeBatch() {
       stroke: queuedStroke,
     }));
   });
+
+  offlineQueueNoticeShown = false;
   
   saveToLocalStorage();
 }
@@ -442,16 +456,17 @@ function clearForEveryone() {
     return;
   }
 
-  applyLocalClear();
-
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      type: "clear",
-      clientId,
-    }));
-  } else {
+  if (ws?.readyState !== WebSocket.OPEN) {
     showToast("Cannot clear for everyone while offline", "warning");
+    return;
   }
+
+  ws.send(JSON.stringify({
+    type: "clear",
+    clientId,
+  }));
+
+  applyLocalClear();
 }
 
 function clearLocalOnly() {
@@ -584,6 +599,8 @@ function rememberSegment(segment) {
   if (key) {
     seenSegmentKeys.add(key);
   }
+
+  pruneInMemorySegments();
 }
 
 function shouldSkipRemoteSegment(segment) {
@@ -605,11 +622,88 @@ function enqueueRemoteSegment(segment) {
   }
 
   remoteRenderFrame = requestAnimationFrame(() => {
-    while (remoteRenderQueue.length > 0) {
-      const pending = remoteRenderQueue.shift();
-      drawSegment(pending);
+    try {
+      while (remoteRenderQueue.length > 0) {
+        const pending = remoteRenderQueue.shift();
+        drawSegment(pending);
+      }
+    } finally {
+      remoteRenderFrame = null;
     }
-    remoteRenderFrame = null;
+  });
+}
+
+function acceptRemoteSegment(segment) {
+  if (shouldSkipRemoteSegment(segment)) {
+    return false;
+  }
+
+  rememberSegment(segment);
+  renderedSegments.push(segment);
+  enqueueRemoteSegment(segment);
+  return true;
+}
+
+function normalizeGatewayMessage(data) {
+  if (!data || typeof data !== "object") {
+    return null;
+  }
+
+  if (data.type !== "echo") {
+    return data;
+  }
+
+  const original = data.original;
+  if (!original || typeof original !== "object") {
+    return null;
+  }
+
+  if (original.type === "ping") {
+    return {
+      type: "pong",
+      timestamp: original.timestamp,
+    };
+  }
+
+  if (original.type === "stroke") {
+    return {
+      type: "stroke",
+      stroke: original.stroke,
+    };
+  }
+
+  if (original.type === "stroke-batch") {
+    return {
+      type: "stroke-batch",
+      strokes: original.strokes,
+    };
+  }
+
+  if (original.type === "clear") {
+    return { type: "clear" };
+  }
+
+  return null;
+}
+
+function pruneInMemorySegments() {
+  if (renderedSegments.length <= MAX_RENDERED_SEGMENTS) {
+    return;
+  }
+
+  const keepFrom = renderedSegments.length - MAX_RENDERED_SEGMENTS;
+  renderedSegments = renderedSegments.slice(keepFrom);
+
+  const localFiltered = localSegments.filter((segment) => renderedSegments.includes(segment));
+  localSegments.length = 0;
+  localSegments.push(...localFiltered);
+
+  seenSegmentKeys.clear();
+  renderedSegments.forEach((segment) => {
+    const key = segmentKey(segment);
+    if (key) {
+      seenSegmentKeys.add(key);
+    }
   });
 }
 
@@ -676,12 +770,28 @@ function showToast(message, type = "info") {
 // Local storage backup
 function saveToLocalStorage() {
   try {
-    const data = {
-      segments: renderedSegments.slice(-1000), // Keep last 1000 segments
+    // Keep recent segments and trim further if payload gets too large.
+    let segments = renderedSegments.slice(-1000);
+    let payload = {
+      segments,
       timestamp: Date.now(),
       clientId,
     };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    let serialized = JSON.stringify(payload);
+
+    while (serialized.length > MAX_LOCAL_STORAGE_BYTES && segments.length > 100) {
+      segments = segments.slice(100);
+      payload = {
+        segments,
+        timestamp: Date.now(),
+        clientId,
+      };
+      serialized = JSON.stringify(payload);
+    }
+
+    if (serialized.length <= MAX_LOCAL_STORAGE_BYTES) {
+      localStorage.setItem(STORAGE_KEY, serialized);
+    }
   } catch {
     // Ignore storage quota and privacy mode errors.
   }
@@ -708,7 +818,7 @@ function loadFromLocalStorage() {
         drawSegment(segment);
       });
       syncStrokeStats();
-      showToast("Restored from local backup", "info");
+      showToast("Offline fallback: restored local backup", "info");
       return true;
     }
   } catch {
