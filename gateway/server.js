@@ -59,7 +59,40 @@ const rateLimits = new Map();        // clientId -> { count, resetTime, violatio
 const MAX_REQUESTS_PER_SECOND = 100; // Max strokes per client per second
 const MAX_VIOLATIONS = 5;            // Max violations before blocking
 const VIOLATION_RESET_TIME = 60000;  // Reset violation count after 1 minute
+const RATE_LIMIT_CLEANUP_INTERVAL = 60000; // Sweep expired rate-limit state once per minute
 
+/**
+ * Remove expired rate-limit state so disconnected clients do not accumulate
+ * in memory indefinitely.
+ */
+function evictExpiredRateLimits(now = Date.now()) {
+    for (const [clientId, state] of rateLimits.entries()) {
+        if (!state || typeof state !== "object") {
+            rateLimits.delete(clientId);
+            continue;
+        }
+
+        const requestWindowExpired =
+            typeof state.resetTime !== "number" || state.resetTime <= now;
+        const hasActiveViolations = Number(state.violations || 0) > 0;
+        const violationWindowExpired =
+            !hasActiveViolations ||
+            typeof state.violationResetTime !== "number" ||
+            state.violationResetTime <= now;
+
+        if (requestWindowExpired && violationWindowExpired) {
+            rateLimits.delete(clientId);
+        }
+    }
+}
+
+const rateLimitCleanupInterval = setInterval(
+    () => evictExpiredRateLimits(),
+    RATE_LIMIT_CLEANUP_INTERVAL
+);
+if (typeof rateLimitCleanupInterval.unref === "function") {
+    rateLimitCleanupInterval.unref();
+}
 // Validation statistics
 let validationFailures = 0;
 let rateLimitHits = 0;
