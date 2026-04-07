@@ -30,5 +30,6 @@
 | Stroke persists on refresh | ❌ | #2 |
 
 ## Issues Created
-- Issue #1 — canvas.js missing WebSocket → @PES2UG24CS818
+- Issue #1 — Frontend container missing from docker-compose → @PES2UG24CS818 (fixed)
+- Issue #2 — canvas.js missing WebSocket, stroke broadcast, tab sync, refresh persistence → @PES2UG24CS818
 
