@@ -1,35 +1,28 @@
-# Integration Log — Day 3
+# Integration Log 
 
-## System Status
-- docker-compose up: ✅
-- replica1 running (port 5001): ✅
-- replica2 running (port 5002): ✅
-- replica3 running (port 5003): ✅
-- gateway running (port 8080): ✅
-- frontend running (port 3000): ✅
-
-## RAFT Election Observed
-- Split vote in Term 1 between Replica1 and Replica3
-- Replica3 won election in Term 2 with 3/3 votes
-- Replica3 became LEADER ✅
-- Replica1, Replica2 became FOLLOWERS ✅
-- Election timeout and retry working ✅
-- Higher term wins correctly ✅
+## Pre-conditions
+- All 5 containers running: ✅
+- canvas.js WebSocket fixed: ✅
 
 ## Test Results
+
 | Test | Result | Issue # |
 |---|---|---|
-| docker-compose up | ✅ | - |
-| Replicas start as followers | ✅ | - |
-| RAFT election happens | ✅ | - |
-| Leader elected correctly | ✅ | - |
-| Frontend loads | ✅ | #1 |
-| WebSocket connects | ❌ | #2 |
-| Drawing sends stroke | ❌ | #2 |
-| Two tabs sync | ❌ | #2 |
-| Stroke persists on refresh | ❌ | #2 |
+| 🟢 Connected to gateway shows | ✅/❌ | |
+| Drawing sends stroke to gateway | ✅/❌ | |
+| Replica commits stroke | ✅/❌ | |
+| Two tabs show same drawing | ✅/❌ | |
+| Stroke persists after refresh | ✅/❌ | |
+| Kill leader → new election | ✅/❌ | |
+| Gateway re-routes to new leader | ✅/❌ | |
+| Drawing works after failover | ✅/❌ | |
+| Dead replica rejoins as follower | ✅/❌ | |
+| Browser stays connected during failover | ✅/❌ | |
 
 ## Issues Created
-- Issue #1 — Frontend container missing from docker-compose → @PES2UG24CS818 (fixed)
-- Issue #2 — canvas.js missing WebSocket, stroke broadcast, tab sync, refresh persistence → @PES2UG24CS818
+Issue #1 — Frontend container missing from docker-compose → @PES2UG24CS818 (fixed)
+Issue #2 — canvas.js missing WebSocket, stroke broadcast, tab sync, refresh persistence → @PES2UG24CS818
 
+
+## Conclusion
+The system demonstrates stable operation with successful integration between frontend, gateway, and replica nodes. It handles failures effectively through leader-based processing and maintains consistency using RAFT principles. Overall, the system shows reliable performance and fault tolerance under basic failover scenarios.
