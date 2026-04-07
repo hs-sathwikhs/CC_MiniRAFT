@@ -18,7 +18,8 @@ const clientInfoEl = document.getElementById("clientInfo");
 const clientSwatch = document.getElementById("clientSwatch");
 
 const protocol = globalThis.location.protocol === "https:" ? "wss" : "ws";
-const defaultGatewayHost = `${globalThis.location.hostname}:8080`;
+const effectiveHostname = globalThis.location.hostname || "localhost";
+const defaultGatewayHost = `${effectiveHostname}:8080`;
 const gatewayHost = new URLSearchParams(globalThis.location.search).get("gateway") || defaultGatewayHost;
 const wsUrl = `${protocol}://${gatewayHost}`;
 
