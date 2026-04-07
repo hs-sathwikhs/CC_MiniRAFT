@@ -54,6 +54,149 @@ const MAX_LEADER_FAILURES = 2;       // Leader is considered down after this man
 // Memory management
 const MAX_STROKE_HISTORY = 1000;     // Cap stroke history to prevent unbounded growth
 
+// Rate limiting
+const rateLimits = new Map();        // clientId -> { count, resetTime, violations }
+const MAX_REQUESTS_PER_SECOND = 100; // Max strokes per client per second
+const MAX_VIOLATIONS = 5;            // Max violations before blocking
+const VIOLATION_RESET_TIME = 60000;  // Reset violation count after 1 minute
+
+// Validation statistics
+let validationFailures = 0;
+let rateLimitHits = 0;
+let clearsForwarded = 0;
+let clearsFailed = 0;
+
+// ── Input Validation ───────────────────────────────────────────────────────
+
+/**
+ * Validate stroke data
+ * @param {object} stroke - Stroke object to validate
+ * @returns {object} { valid: boolean, error?: string }
+ */
+function validateStroke(stroke) {
+    if (!stroke || typeof stroke !== 'object') {
+        return { valid: false, error: "Stroke must be an object" };
+    }
+    
+    // Required coordinate fields
+    const required = ['x0', 'y0', 'x1', 'y1'];
+    for (const field of required) {
+        if (!Number.isFinite(stroke[field])) {
+            return { valid: false, error: `${field} must be a finite number` };
+        }
+        
+        // Reasonable coordinate range (prevent DoS via huge numbers)
+        if (Math.abs(stroke[field]) > 100000) {
+            return { valid: false, error: `${field} exceeds coordinate limit` };
+        }
+    }
+    
+    // Optional width validation
+    if (stroke.width !== undefined) {
+        if (!Number.isFinite(stroke.width) || stroke.width < 1 || stroke.width > 100) {
+            return { valid: false, error: "Width must be between 1 and 100" };
+        }
+    }
+    
+    // Optional color validation (hex color format)
+    if (stroke.color !== undefined) {
+        if (typeof stroke.color !== 'string' || !/^#[0-9a-f]{6}$/i.test(stroke.color)) {
+            return { valid: false, error: "Color must be in #RRGGBB format" };
+        }
+    }
+    
+    // Optional tool validation
+    if (stroke.tool !== undefined) {
+        if (typeof stroke.tool !== 'string' || !['pen', 'eraser'].includes(stroke.tool)) {
+            return { valid: false, error: "Tool must be 'pen' or 'eraser'" };
+        }
+    }
+    
+    return { valid: true };
+}
+
+/**
+ * Validate clear command data
+ * @param {object} data - Clear command data
+ * @returns {object} { valid: boolean, error?: string }
+ */
+function validateClear(data) {
+    // Clear command can have optional clientId but no other required fields
+    if (data && typeof data !== 'object') {
+        return { valid: false, error: "Clear data must be an object" };
+    }
+    return { valid: true };
+}
+
+/**
+ * Check if client is rate limited
+ * @param {string} clientId - Client identifier
+ * @returns {boolean} True if rate limited
+ */
+function isRateLimited(clientId) {
+    const now = Date.now();
+    const limit = rateLimits.get(clientId) || { 
+        count: 0, 
+        resetTime: now + 1000,
+        violations: 0,
+        violationResetTime: now + VIOLATION_RESET_TIME
+    };
+    
+    // Reset violation count if time elapsed
+    if (now > limit.violationResetTime) {
+        limit.violations = 0;
+        limit.violationResetTime = now + VIOLATION_RESET_TIME;
+    }
+    
+    // Block if too many violations
+    if (limit.violations >= MAX_VIOLATIONS) {
+        return true;
+    }
+    
+    // Reset count if time window elapsed
+    if (now > limit.resetTime) {
+        limit.count = 0;
+        limit.resetTime = now + 1000;
+    }
+    
+    limit.count++;
+    rateLimits.set(clientId, limit);
+    
+    // Check if over limit
+    if (limit.count > MAX_REQUESTS_PER_SECOND) {
+        limit.violations++;
+        rateLimits.set(clientId, limit);
+        return true;
+    }
+    
+    return false;
+}
+
+/**
+ * Sanitize error messages to avoid leaking internal details
+ * @param {string} error - Original error message
+ * @returns {string} Sanitized error message
+ */
+function sanitizeError(error) {
+    if (!error) return "An error occurred";
+    
+    const errorStr = error.toString();
+    
+    // Remove internal URLs and IPs
+    let sanitized = errorStr.replace(/https?:\/\/[^\s]+/g, "[REDACTED_URL]");
+    sanitized = sanitized.replace(/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/g, "[REDACTED_IP]");
+    
+    // Remove stack traces
+    sanitized = sanitized.split('\n')[0];
+    
+    // Generic message for common errors
+    if (sanitized.includes("ECONNREFUSED")) return "Service temporarily unavailable";
+    if (sanitized.includes("ETIMEDOUT")) return "Request timeout";
+    if (sanitized.includes("ENOTFOUND")) return "Service not found";
+    
+    return sanitized.substring(0, 200); // Limit length
+}
+
 // ── Logging Helper ─────────────────────────────────────────────────────────
 function logInfo(message, data = {}) {
     const timestamp = new Date().toISOString();
@@ -296,6 +439,91 @@ async function forwardStrokeToLeader(strokeData, maxRetries = 3) {
     };
 }
 
+/**
+ * Forward a clear command to the current leader replica
+ * @param {object} clearData - Clear command data from client
+ * @param {number} maxRetries - Maximum retry attempts
+ * @returns {Promise<object>} Response from leader or error
+ */
+async function forwardClearToLeader(clearData = {}, maxRetries = 3) {
+    let attempts = 0;
+    let lastError = null;
+    
+    while (attempts < maxRetries) {
+        attempts++;
+        
+        try {
+            // Ensure we know who the leader is
+            const leaderUrl = await ensureLeaderUrl();
+            
+            if (!leaderUrl) {
+                logInfo("No leader available for clear, retrying", { 
+                    attempt: attempts, 
+                    maxRetries 
+                });
+                
+                // Wait before retry with exponential backoff
+                const backoff = 200 * Math.pow(2, attempts - 1);
+                await new Promise(resolve => setTimeout(resolve, backoff));
+                
+                // Force rediscovery on next attempt
+                knownLeaderUrl = null;
+                knownLeaderId = null;
+                continue;
+            }
+            
+            // Forward clear to leader's /clear endpoint
+            logInfo("Forwarding clear to leader", { 
+                leaderId: knownLeaderId,
+                attempt: attempts
+            });
+            
+            const response = await axios.post(
+                `${leaderUrl}/clear`,
+                { clientId: clearData.clientId || "unknown" },
+                { timeout: 1000 }
+            );
+            
+            if (response.status === 200) {
+                clearsForwarded++;
+                logInfo("Clear forwarded successfully", { 
+                    leaderId: knownLeaderId,
+                    clearCount: clearsForwarded
+                });
+                
+                return { success: true, data: response.data };
+            }
+            
+            throw new Error(`Leader returned status ${response.status}`);
+            
+        } catch (error) {
+            lastError = error;
+            
+            logError(`Failed to forward clear (attempt ${attempts})`, error);
+            
+            // Leader might have changed, force rediscovery
+            knownLeaderUrl = null;
+            knownLeaderId = null;
+            
+            if (attempts < maxRetries) {
+                // Wait before retry with exponential backoff
+                const backoff = 300 * Math.pow(2, attempts - 1);
+                await new Promise(resolve => setTimeout(resolve, backoff));
+            }
+        }
+    }
+    
+    // All retries exhausted
+    clearsFailed++;
+    logError("Failed to forward clear after all retries", lastError);
+    
+    return { 
+        success: false, 
+        error: lastError.message || "Unknown error",
+        retriesExhausted: true
+    };
+}
+
 // ── Day 3: Broadcasting Committed Entries ──────────────────────────────────
 
 /**
@@ -349,51 +577,81 @@ async function pollCommittedEntries() {
             { timeout: 500 }
         );
         
-        if (response.data && response.data.entries) {
-            const newEntries = response.data.entries;
-            
-            // Process each new committed entry
-            for (const entry of newEntries) {
-                // Generate unique ID for deduplication
-                const strokeId = `${entry.term}-${entry.index}`;
-                
-                // Skip if we've already seen this stroke
-                if (committedStrokeIds.has(strokeId)) {
-                    continue;
-                }
-                
-                // Mark as seen and add to history
-                committedStrokeIds.add(strokeId);
-                strokeHistory.push(entry.stroke);
-                
-                // Update last seen commit index
-                if (entry.index > lastCommitIndex) {
-                    lastCommitIndex = entry.index;
-                }
-                
-                // Broadcast to all connected clients
-                broadcastStroke(entry.stroke);
-                
-                logInfo("New commit detected and broadcasted", {
-                    index: entry.index,
-                    term: entry.term,
-                    commitIndex: response.data.commitIndex
-                });
+        // Validate response structure
+        if (!response.data || typeof response.data !== 'object') {
+            logError("Invalid /committed response: not an object", new Error("Invalid response"));
+            return;
+        }
+        
+        if (!Array.isArray(response.data.entries)) {
+            logError("Invalid /committed response: entries not an array", new Error("Invalid response"));
+            return;
+        }
+        
+        if (typeof response.data.commitIndex !== 'number') {
+            logError("Invalid /committed response: commitIndex not a number", new Error("Invalid response"));
+            return;
+        }
+        
+        const newEntries = response.data.entries;
+        
+        // Process each new committed entry
+        for (const entry of newEntries) {
+            // Validate entry structure
+            if (!entry || typeof entry !== 'object') {
+                logError("Invalid entry in /committed response", new Error("Invalid entry"));
+                continue;
             }
             
-            // Memory management: cap history size
-            if (strokeHistory.length > MAX_STROKE_HISTORY) {
-                const excess = strokeHistory.length - MAX_STROKE_HISTORY;
-                strokeHistory.splice(0, excess);
-                
-                logInfo("Trimmed stroke history", {
-                    removed: excess,
-                    currentSize: strokeHistory.length
-                });
-                
-                // Note: committedStrokeIds Set will continue to grow,
-                // but IDs are small strings so memory impact is minimal
+            if (typeof entry.term !== 'number' || typeof entry.index !== 'number') {
+                logError("Entry missing term or index", new Error("Invalid entry"));
+                continue;
             }
+            
+            if (!entry.stroke || typeof entry.stroke !== 'object') {
+                logError("Entry missing stroke data", new Error("Invalid entry"));
+                continue;
+            }
+            
+            // Generate unique ID for deduplication
+            const strokeId = `${entry.term}-${entry.index}`;
+            
+            // Skip if we've already seen this stroke
+            if (committedStrokeIds.has(strokeId)) {
+                continue;
+            }
+            
+            // Mark as seen and add to history
+            committedStrokeIds.add(strokeId);
+            strokeHistory.push(entry.stroke);
+            
+            // Update last seen commit index
+            if (entry.index > lastCommitIndex) {
+                lastCommitIndex = entry.index;
+            }
+            
+            // Broadcast to all connected clients
+            broadcastStroke(entry.stroke);
+            
+            logInfo("New commit detected and broadcasted", {
+                index: entry.index,
+                term: entry.term,
+                commitIndex: response.data.commitIndex
+            });
+        }
+        
+        // Memory management: cap history size
+        if (strokeHistory.length > MAX_STROKE_HISTORY) {
+            const excess = strokeHistory.length - MAX_STROKE_HISTORY;
+            strokeHistory.splice(0, excess);
+            
+            logInfo("Trimmed stroke history", {
+                removed: excess,
+                currentSize: strokeHistory.length
+            });
+            
+            // Note: committedStrokeIds Set will continue to grow,
+            // but IDs are small strings so memory impact is minimal
         }
         
     } catch (error) {
@@ -601,8 +859,40 @@ wss.on("connection", (ws, req) => {
                 messageNumber: messageCount 
             });
 
-            // Day 2: Forward strokes to leader (not just echo)
+            // Rate limiting check
+            if (isRateLimited(clientId)) {
+                rateLimitHits++;
+                safeSend(ws, {
+                    type: "error",
+                    message: "Rate limit exceeded. Please slow down.",
+                    rateLimited: true
+                });
+                logInfo("Client rate limited", { 
+                    clientId, 
+                    totalRateLimitHits: rateLimitHits 
+                });
+                return;
+            }
+
+            // Handle stroke messages
             if (message.type === "stroke" || message.type === "test") {
+                // Validate stroke data
+                const validation = validateStroke(message.stroke || message.content);
+                if (!validation.valid) {
+                    validationFailures++;
+                    safeSend(ws, {
+                        type: "error",
+                        message: validation.error,
+                        validation: false
+                    });
+                    logInfo("Stroke validation failed", { 
+                        clientId, 
+                        error: validation.error,
+                        totalFailures: validationFailures 
+                    });
+                    return;
+                }
+                
                 // Prepare stroke data for leader
                 const strokeData = {
                     type: message.type,
@@ -624,15 +914,68 @@ wss.on("connection", (ws, req) => {
                     });
                 } else {
                     // Notify sender of failure (safe send - check connection state)
+                    // Sanitize error message to avoid leaking internal details
                     safeSend(ws, {
                         type: "error",
                         message: "Failed to forward stroke to leader",
-                        error: result.error,
+                        error: sanitizeError(result.error),
                         retry: true
                     });
                 }
-            } else {
-                // Other message types - echo back for now (safe send)
+            } 
+            // Handle clear command
+            else if (message.type === "clear") {
+                // Validate clear command
+                const validation = validateClear(message.data);
+                if (!validation.valid) {
+                    validationFailures++;
+                    safeSend(ws, {
+                        type: "error",
+                        message: validation.error,
+                        validation: false
+                    });
+                    logInfo("Clear validation failed", { 
+                        clientId, 
+                        error: validation.error 
+                    });
+                    return;
+                }
+                
+                // Prepare clear data
+                const clearData = {
+                    clientId: clientId,
+                    timestamp: Date.now()
+                };
+                
+                // Forward to leader
+                const result = await forwardClearToLeader(clearData);
+                
+                if (result.success) {
+                    // Acknowledge to sender
+                    safeSend(ws, {
+                        type: "ack",
+                        message: "Clear command forwarded to leader",
+                        leaderId: knownLeaderId,
+                        timestamp: Date.now()
+                    });
+                    
+                    logInfo("Clear command forwarded", { 
+                        clientId,
+                        leaderId: knownLeaderId 
+                    });
+                } else {
+                    // Notify sender of failure (sanitized error)
+                    safeSend(ws, {
+                        type: "error",
+                        message: "Failed to forward clear command",
+                        error: sanitizeError(result.error),
+                        retry: true
+                    });
+                }
+            }
+            // Handle other message types
+            else {
+                // Echo back for now (safe send)
                 safeSend(ws, {
                     type: "echo",
                     original: message,
@@ -643,6 +986,7 @@ wss.on("connection", (ws, req) => {
         } catch (error) {
             logError("Failed to process client message", error);
             // Safe send - connection may have closed during error
+            // Use sanitized error message
             safeSend(ws, {
                 type: "error",
                 message: "Failed to process message"
@@ -687,6 +1031,8 @@ app.get("/stats", (req, res) => {
         totalBroadcasts: broadcastCount,
         strokesForwarded: strokesForwarded,
         strokesFailed: strokesFailed,
+        clearsForwarded: clearsForwarded,
+        clearsFailed: clearsFailed,
         knownLeader: knownLeaderId,
         knownLeaderUrl: knownLeaderUrl,
         // Day 3: Broadcasting stats
@@ -698,6 +1044,10 @@ app.get("/stats", (req, res) => {
         healthMonitoringActive: !!healthCheckInterval,
         leaderFailureCount: leaderFailureCount,
         lastHealthCheck: lastHealthCheck,
+        // Security stats
+        validationFailures: validationFailures,
+        rateLimitHits: rateLimitHits,
+        activeRateLimits: rateLimits.size,
         uptime: process.uptime()
     });
 });
@@ -896,16 +1246,34 @@ process.on("SIGTERM", () => {
     stopCommitPolling();
     stopHealthMonitoring();
     
+    // Give time for ongoing operations to complete
     server.close(() => {
         logInfo("Server closed");
         process.exit(0);
     });
+    
+    // Force exit after 5 seconds if graceful shutdown hangs
+    setTimeout(() => {
+        logError("Graceful shutdown timeout - forcing exit", new Error("Shutdown timeout"));
+        process.exit(1);
+    }, 5000);
 });
 
 process.on("SIGINT", () => {
     logInfo("Received SIGINT, shutting down gracefully");
+    
+    // Stop monitoring
+    stopCommitPolling();
+    stopHealthMonitoring();
+    
     server.close(() => {
         logInfo("Server closed");
         process.exit(0);
     });
+    
+    // Force exit after 5 seconds if graceful shutdown hangs
+    setTimeout(() => {
+        logError("Graceful shutdown timeout - forcing exit", new Error("Shutdown timeout"));
+        process.exit(1);
+    }, 5000);
 });
