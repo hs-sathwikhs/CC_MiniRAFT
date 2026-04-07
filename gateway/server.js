@@ -370,9 +370,17 @@ async function pollCommittedEntries() {
         }
         
     } catch (error) {
-        // Silently fail - leader might be down or changing
-        // This is normal during elections, don't spam logs
-        if (error.code !== 'ECONNREFUSED' && error.code !== 'ETIMEDOUT') {
+        // Day 4: Enhanced error handling for leader failures
+        if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
+            // Leader might be down - health check will handle rediscovery
+            // Don't spam logs during normal elections
+        } else if (error.response && error.response.status === 404) {
+            // Endpoint not found - might be talking to wrong replica
+            logError("Committed endpoint not found on leader", error);
+            knownLeaderUrl = null;
+            knownLeaderId = null;
+        } else {
+            // Unexpected error
             logError("Error polling committed entries", error);
         }
     }
@@ -404,6 +412,109 @@ function stopCommitPolling() {
         clearInterval(pollingInterval);
         pollingInterval = null;
         logInfo("Stopped commit polling");
+    }
+}
+
+// ── Day 4: Leader Health Monitoring & Failover ────────────────────────────
+
+/**
+ * Perform health check on current known leader
+ * Detects leader failures and triggers automatic rediscovery
+ */
+async function checkLeaderHealth() {
+    // Skip if we don't have a known leader
+    if (!knownLeaderUrl || !knownLeaderId) {
+        return;
+    }
+    
+    try {
+        const response = await axios.get(
+            `${knownLeaderUrl}/health`,
+            { timeout: 1000 }
+        );
+        
+        // Verify this replica is still the leader
+        if (response.data && response.data.role === 'leader') {
+            // Leader is healthy
+            leaderFailureCount = 0;
+            lastHealthCheck = Date.now();
+            
+            logInfo("Leader health check passed", {
+                leaderId: knownLeaderId,
+                term: response.data.term,
+                logLength: response.data.logLength
+            });
+        } else {
+            // Replica is no longer the leader
+            logInfo("Leader has stepped down", {
+                oldLeaderId: knownLeaderId,
+                currentRole: response.data.role,
+                reportedLeader: response.data.leader
+            });
+            
+            // Force rediscovery
+            knownLeaderUrl = null;
+            knownLeaderId = null;
+            leaderFailureCount = 0;
+            
+            // Attempt immediate rediscovery
+            await discoverLeader();
+        }
+        
+    } catch (error) {
+        leaderFailureCount++;
+        
+        logError(`Leader health check failed (${leaderFailureCount}/${MAX_LEADER_FAILURES})`, error);
+        
+        // If leader has failed multiple times, force rediscovery
+        if (leaderFailureCount >= MAX_LEADER_FAILURES) {
+            logInfo("Leader appears to be down - forcing rediscovery", {
+                oldLeaderId: knownLeaderId,
+                failureCount: leaderFailureCount
+            });
+            
+            // Clear cached leader
+            knownLeaderUrl = null;
+            knownLeaderId = null;
+            leaderFailureCount = 0;
+            
+            // Attempt to discover new leader
+            try {
+                await discoverLeader();
+                logInfo("New leader discovered after failover");
+            } catch (discoveryError) {
+                logError("Failed to discover new leader - cluster may be in election", discoveryError);
+            }
+        }
+    }
+}
+
+/**
+ * Start periodic leader health monitoring
+ * Checks leader health every 5 seconds
+ */
+function startHealthMonitoring() {
+    if (healthCheckInterval) {
+        return; // Already monitoring
+    }
+    
+    logInfo("Starting leader health monitoring", { interval: "5s" });
+    
+    // Perform initial health check after 5 seconds
+    setTimeout(checkLeaderHealth, 5000);
+    
+    // Then check every 5 seconds
+    healthCheckInterval = setInterval(checkLeaderHealth, 5000);
+}
+
+/**
+ * Stop leader health monitoring
+ */
+function stopHealthMonitoring() {
+    if (healthCheckInterval) {
+        clearInterval(healthCheckInterval);
+        healthCheckInterval = null;
+        logInfo("Stopped health monitoring");
     }
 }
 
@@ -545,6 +656,10 @@ app.get("/stats", (req, res) => {
         lastCommitIndex: lastCommitIndex,
         strokeHistorySize: strokeHistory.length,
         pollingActive: !!pollingInterval,
+        // Day 4: Failover stats
+        healthMonitoringActive: !!healthCheckInterval,
+        leaderFailureCount: leaderFailureCount,
+        lastHealthCheck: lastHealthCheck,
         uptime: process.uptime()
     });
 });
@@ -703,9 +818,9 @@ app.get("/", (req, res) => {
     `);
 });
 
-// Serve Day 2 test page
+// Serve Day 2 test page (removed - use frontend instead)
 app.get("/test", (req, res) => {
-    res.sendFile(__dirname + "/test-day2.html");
+    res.redirect("/");
 });
 
 // ── Server Startup ─────────────────────────────────────────────────────────
@@ -718,22 +833,31 @@ server.listen(PORT, () => {
     });
     console.log("");
     console.log("═══════════════════════════════════════════════════════════");
-    console.log("  Mini-RAFT Gateway Server - Day 3: Broadcasting");
+    console.log("  Mini-RAFT Gateway Server - Day 4: Failover Handling");
     console.log("═══════════════════════════════════════════════════════════");
     console.log(`  URL: http://localhost:${PORT}`);
     console.log(`  Connected Clients: 0`);
     console.log(`  Replica URLs: ${REPLICA_URLS.join(", ")}`);
-    console.log(`  Commit Polling: Starting...`);
+    console.log(`  Commit Polling: Every 200ms`);
+    console.log(`  Health Monitoring: Every 5s`);
     console.log("═══════════════════════════════════════════════════════════");
     
     // Day 3: Start polling for committed entries
     startCommitPolling();
+    
+    // Day 4: Start leader health monitoring
+    startHealthMonitoring();
     console.log("");
 });
 
 // Graceful shutdown
 process.on("SIGTERM", () => {
     logInfo("Received SIGTERM, shutting down gracefully");
+    
+    // Stop monitoring
+    stopCommitPolling();
+    stopHealthMonitoring();
+    
     server.close(() => {
         logInfo("Server closed");
         process.exit(0);

@@ -46,9 +46,18 @@ The Gateway is the traffic controller for the entire Mini-RAFT system. It:
 - [x] Removed test artifacts (test-day2.html)
 - [x] **Deliverable**: Real-time stroke synchronization across all clients ✓
 
+### ✅ Day 4: Failover & Health Monitoring (COMPLETED)
+- [x] Implemented periodic leader health checks (every 5 seconds)
+- [x] Added automatic leader rediscovery on failure detection
+- [x] Implemented failure threshold (2 consecutive failures)
+- [x] Enhanced error handling during elections
+- [x] Added graceful shutdown for monitoring intervals
+- [x] Updated `/stats` endpoint with failover metrics
+- [x] **Deliverable**: Seamless failover with zero client disconnections ✓
+
 ## Architecture
 
-### Data Flow (Day 3)
+### Data Flow (Day 3-4)
 
 ```
 Frontend Canvas
@@ -72,6 +81,14 @@ Gateway polls /committed (200ms intervals)
 All Frontend Clients
     │
     └─ Real-time synchronized drawing
+    
+┌─────────────────────────────────┐
+│ Background: Health Monitoring   │
+│ - Checks leader every 5s        │
+│ - Detects failures (2x timeout) │
+│ - Auto-rediscovers new leader   │
+│ - No client disconnections      │
+└─────────────────────────────────┘
 ```
 
 ### Polling Strategy
@@ -84,11 +101,25 @@ Instead of callbacks, the gateway uses **active polling**:
 
 **Why polling?** No changes needed to replica code - works with existing API.
 
-### 🔜 Day 4: Failover & Re-routing (PENDING)
-- [ ] Periodic leader health checks
-- [ ] Automatic rediscovery on failure
-- [ ] Request queueing during elections
-- [ ] Seamless failover demonstration
+### Failover Strategy (Day 4)
+
+The gateway handles leader failures transparently:
+
+**Detection:**
+- Health check every 5 seconds via `/health` endpoint
+- Verifies replica still has `role: "leader"`
+- 2 consecutive failures trigger rediscovery
+
+**Recovery:**
+1. Clear cached leader URL/ID
+2. Run `discoverLeader()` to find new leader
+3. Resume polling and forwarding automatically
+4. Clients stay connected throughout failover
+
+**During Elections:**
+- Commit polling gracefully handles timeouts
+- Stroke forwarding retries with exponential backoff
+- No error spam in logs during normal elections
 
 ### 🔜 Day 5: Dashboard & Monitoring (PENDING)
 - [ ] Create `dashboard.html`
@@ -155,7 +186,7 @@ Returns gateway health status
 ```
 
 #### `GET /stats`
-Returns gateway statistics (updated for Day 3)
+Returns gateway statistics (updated for Day 4)
 ```json
 {
   "connectedClients": 2,
@@ -169,6 +200,9 @@ Returns gateway statistics (updated for Day 3)
   "lastCommitIndex": 11,
   "strokeHistorySize": 12,
   "pollingActive": true,
+  "healthMonitoringActive": true,
+  "leaderFailureCount": 0,
+  "lastHealthCheck": 1712456789000,
   "uptime": 123.45
 }
 ```
