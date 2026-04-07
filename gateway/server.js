@@ -37,6 +37,18 @@ let broadcastCount = 0;              // Total broadcasts sent
 let strokesForwarded = 0;            // Total strokes forwarded to leader
 let strokesFailed = 0;               // Total strokes that failed to forward
 
+// Day 3: Broadcasting state
+let committedStrokeIds = new Set();  // Track seen stroke IDs for deduplication
+let lastCommitIndex = -1;            // Last commit index we've seen
+let strokeHistory = [];              // Cache of all committed strokes for new clients
+let pollingInterval = null;          // Interval handle for commit polling
+
+// Day 4: Failover & health monitoring
+let healthCheckInterval = null;      // Interval handle for leader health checks
+let leaderFailureCount = 0;          // Consecutive leader health check failures
+let lastHealthCheck = null;          // Timestamp of last successful health check
+const MAX_LEADER_FAILURES = 2;       // Leader is considered down after this many failures
+
 // ── Logging Helper ─────────────────────────────────────────────────────────
 function logInfo(message, data = {}) {
     const timestamp = new Date().toISOString();
@@ -227,15 +239,15 @@ async function forwardStrokeToLeader(strokeData, maxRetries = 3) {
                 continue;
             }
             
-            // Forward stroke to leader's /client-stroke endpoint
+            // Forward stroke to leader's /stroke endpoint (Day 3: Fixed endpoint)
             logInfo("Forwarding stroke to leader", { 
                 leaderId: knownLeaderId,
                 attempt: attempts
             });
             
             const response = await axios.post(
-                `${leaderUrl}/client-stroke`,
-                strokeData,
+                `${leaderUrl}/stroke`,
+                { stroke: strokeData.stroke },  // Replica expects { stroke: {...} }
                 { timeout: 1000 }
             );
             
@@ -279,6 +291,122 @@ async function forwardStrokeToLeader(strokeData, maxRetries = 3) {
     };
 }
 
+// ── Day 3: Broadcasting Committed Entries ──────────────────────────────────
+
+/**
+ * Broadcast stroke to all connected WebSocket clients
+ * @param {object} stroke - Stroke data to broadcast
+ */
+function broadcastStroke(stroke) {
+    const message = {
+        type: "stroke",
+        stroke: stroke
+    };
+    
+    let successCount = 0;
+    connectedClients.forEach(ws => {
+        if (safeSend(ws, message)) {
+            successCount++;
+        }
+    });
+    
+    broadcastCount++;
+    logInfo("Broadcasted stroke to clients", { 
+        successCount, 
+        totalClients: connectedClients.size 
+    });
+}
+
+/**
+ * Poll for newly committed entries from the leader
+ * Runs periodically to detect new commits and broadcast them
+ */
+async function pollCommittedEntries() {
+    try {
+        // Ensure we know who the leader is
+        const leaderUrl = await ensureLeaderUrl();
+        if (!leaderUrl) {
+            return; // No leader available, will retry next poll
+        }
+        
+        // Fetch committed entries from the leader
+        // Query from lastCommitIndex + 1 to get only new entries
+        const response = await axios.get(
+            `${leaderUrl}/committed?fromIndex=${lastCommitIndex + 1}`,
+            { timeout: 500 }
+        );
+        
+        if (response.data && response.data.entries) {
+            const newEntries = response.data.entries;
+            
+            // Process each new committed entry
+            for (const entry of newEntries) {
+                // Generate unique ID for deduplication
+                const strokeId = `${entry.term}-${entry.index}`;
+                
+                // Skip if we've already seen this stroke
+                if (committedStrokeIds.has(strokeId)) {
+                    continue;
+                }
+                
+                // Mark as seen and add to history
+                committedStrokeIds.add(strokeId);
+                strokeHistory.push(entry.stroke);
+                
+                // Update last seen commit index
+                if (entry.index > lastCommitIndex) {
+                    lastCommitIndex = entry.index;
+                }
+                
+                // Broadcast to all connected clients
+                broadcastStroke(entry.stroke);
+                
+                logInfo("New commit detected and broadcasted", {
+                    index: entry.index,
+                    term: entry.term,
+                    commitIndex: response.data.commitIndex
+                });
+            }
+        }
+        
+    } catch (error) {
+        // Silently fail - leader might be down or changing
+        // This is normal during elections, don't spam logs
+        if (error.code !== 'ECONNREFUSED' && error.code !== 'ETIMEDOUT') {
+            logError("Error polling committed entries", error);
+        }
+    }
+}
+
+/**
+ * Start polling for committed entries
+ * Polls every 200ms for low-latency updates
+ */
+function startCommitPolling() {
+    if (pollingInterval) {
+        return; // Already polling
+    }
+    
+    logInfo("Starting commit polling", { interval: "200ms" });
+    
+    // Poll immediately on start
+    pollCommittedEntries();
+    
+    // Then poll every 200ms
+    pollingInterval = setInterval(pollCommittedEntries, 200);
+}
+
+/**
+ * Stop polling for committed entries
+ */
+function stopCommitPolling() {
+    if (pollingInterval) {
+        clearInterval(pollingInterval);
+        pollingInterval = null;
+        logInfo("Stopped commit polling");
+    }
+}
+
 // ── WebSocket Connection Handling ──────────────────────────────────────────
 
 wss.on("connection", (ws, req) => {
@@ -297,6 +425,20 @@ wss.on("connection", (ws, req) => {
         message: "Connected to Mini-RAFT Gateway",
         clientId: clientId
     });
+
+    // Day 3: Send full stroke history for synchronization
+    if (strokeHistory.length > 0) {
+        safeSend(ws, {
+            type: "full-log",
+            strokes: strokeHistory,
+            count: strokeHistory.length
+        });
+        
+        logInfo("Sent full-log to new client", { 
+            clientId, 
+            strokeCount: strokeHistory.length 
+        });
+    }
 
     // Handle incoming messages from browser
     ws.on("message", async (rawMessage) => {
@@ -398,6 +540,11 @@ app.get("/stats", (req, res) => {
         strokesFailed: strokesFailed,
         knownLeader: knownLeaderId,
         knownLeaderUrl: knownLeaderUrl,
+        // Day 3: Broadcasting stats
+        committedStrokesSeen: committedStrokeIds.size,
+        lastCommitIndex: lastCommitIndex,
+        strokeHistorySize: strokeHistory.length,
+        pollingActive: !!pollingInterval,
         uptime: process.uptime()
     });
 });
@@ -571,12 +718,16 @@ server.listen(PORT, () => {
     });
     console.log("");
     console.log("═══════════════════════════════════════════════════════════");
-    console.log("  Mini-RAFT Gateway Server - Day 2: Leader Discovery");
+    console.log("  Mini-RAFT Gateway Server - Day 3: Broadcasting");
     console.log("═══════════════════════════════════════════════════════════");
     console.log(`  URL: http://localhost:${PORT}`);
     console.log(`  Connected Clients: 0`);
     console.log(`  Replica URLs: ${REPLICA_URLS.join(", ")}`);
+    console.log(`  Commit Polling: Starting...`);
     console.log("═══════════════════════════════════════════════════════════");
+    
+    // Day 3: Start polling for committed entries
+    startCommitPolling();
     console.log("");
 });
 
