@@ -1,13 +1,15 @@
 {
   "name": "replica1",
   "version": "1.0.0",
-  "description": "",
+  "description": "RAFT Consensus Replica Node",
   "main": "index.js",
   "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": ["raft", "consensus", "distributed"],
+  "author": "Satwik",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
