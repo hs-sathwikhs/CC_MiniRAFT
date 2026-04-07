@@ -42,12 +42,17 @@ let committedStrokeIds = new Set();  // Track seen stroke IDs for deduplication
 let lastCommitIndex = -1;            // Last commit index we've seen
 let strokeHistory = [];              // Cache of all committed strokes for new clients
 let pollingInterval = null;          // Interval handle for commit polling
+let isPolling = false;               // In-flight guard for commit polling
 
 // Day 4: Failover & health monitoring
 let healthCheckInterval = null;      // Interval handle for leader health checks
+let initialHealthTimeout = null;     // Timeout handle for initial health check
 let leaderFailureCount = 0;          // Consecutive leader health check failures
 let lastHealthCheck = null;          // Timestamp of last successful health check
 const MAX_LEADER_FAILURES = 2;       // Leader is considered down after this many failures
+
+// Memory management
+const MAX_STROKE_HISTORY = 1000;     // Cap stroke history to prevent unbounded growth
 
 // ── Logging Helper ─────────────────────────────────────────────────────────
 function logInfo(message, data = {}) {
@@ -320,8 +325,16 @@ function broadcastStroke(stroke) {
 /**
  * Poll for newly committed entries from the leader
  * Runs periodically to detect new commits and broadcast them
+ * Uses in-flight guard to prevent overlapping requests
  */
 async function pollCommittedEntries() {
+    // In-flight guard: prevent overlapping polls
+    if (isPolling) {
+        return;
+    }
+    
+    isPolling = true;
+    
     try {
         // Ensure we know who the leader is
         const leaderUrl = await ensureLeaderUrl();
@@ -330,9 +343,9 @@ async function pollCommittedEntries() {
         }
         
         // Fetch committed entries from the leader
-        // Query from lastCommitIndex + 1 to get only new entries
+        // Use 'from' query parameter (matches replica API)
         const response = await axios.get(
-            `${leaderUrl}/committed?fromIndex=${lastCommitIndex + 1}`,
+            `${leaderUrl}/committed?from=${lastCommitIndex + 1}`,
             { timeout: 500 }
         );
         
@@ -367,6 +380,20 @@ async function pollCommittedEntries() {
                     commitIndex: response.data.commitIndex
                 });
             }
+            
+            // Memory management: cap history size
+            if (strokeHistory.length > MAX_STROKE_HISTORY) {
+                const excess = strokeHistory.length - MAX_STROKE_HISTORY;
+                strokeHistory.splice(0, excess);
+                
+                logInfo("Trimmed stroke history", {
+                    removed: excess,
+                    currentSize: strokeHistory.length
+                });
+                
+                // Note: committedStrokeIds Set will continue to grow,
+                // but IDs are small strings so memory impact is minimal
+            }
         }
         
     } catch (error) {
@@ -383,6 +410,9 @@ async function pollCommittedEntries() {
             // Unexpected error
             logError("Error polling committed entries", error);
         }
+    } finally {
+        // Always clear the in-flight flag
+        isPolling = false;
     }
 }
 
@@ -501,7 +531,7 @@ function startHealthMonitoring() {
     logInfo("Starting leader health monitoring", { interval: "5s" });
     
     // Perform initial health check after 5 seconds
-    setTimeout(checkLeaderHealth, 5000);
+    initialHealthTimeout = setTimeout(checkLeaderHealth, 5000);
     
     // Then check every 5 seconds
     healthCheckInterval = setInterval(checkLeaderHealth, 5000);
@@ -511,11 +541,19 @@ function startHealthMonitoring() {
  * Stop leader health monitoring
  */
 function stopHealthMonitoring() {
+    // Clear the interval
     if (healthCheckInterval) {
         clearInterval(healthCheckInterval);
         healthCheckInterval = null;
-        logInfo("Stopped health monitoring");
     }
+    
+    // Clear the initial timeout if it hasn't fired yet
+    if (initialHealthTimeout) {
+        clearTimeout(initialHealthTimeout);
+        initialHealthTimeout = null;
+    }
+    
+    logInfo("Stopped health monitoring");
 }
 
 // ── WebSocket Connection Handling ──────────────────────────────────────────

@@ -1,0 +1,30 @@
+{
+  "name": "miniraft-collaborative-drawing",
+  "version": "1.0.0",
+  "description": "MiniRAFT Collaborative Drawing Board - RAFT Consensus Implementation",
+  "author": "Sathwik HS, Satwik Bankapur, Prajwal, Sudarshan",
+  "license": "MIT",
+  "scripts": {
+    "start": "pwsh -ExecutionPolicy Bypass -File ./start.ps1",
+    "start:bash": "bash ./start.sh",
+    "stop": "pwsh -Command \"Get-Process | Where-Object {$_.ProcessName -eq 'node' -and $_.Path -like '*miniraft*'} | Stop-Process -Force\"",
+    "clean": "pwsh -Command \"Remove-Item -Recurse -Force replica*/node_modules,gateway/node_modules,logs -ErrorAction SilentlyContinue\"",
+    "logs": "pwsh -Command \"Get-Content logs/*.log -Tail 50\"",
+    "install-all": "cd replica1 && npm install && cd ../replica2 && npm install && cd ../replica3 && npm install && cd ../gateway && npm install && cd .."
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hs-sathwikhs/miniraft"
+  },
+  "keywords": [
+    "raft",
+    "consensus",
+    "distributed-systems",
+    "websocket",
+    "collaborative-drawing"
+  ],
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}
