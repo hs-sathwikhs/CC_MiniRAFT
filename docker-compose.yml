@@ -10,12 +10,27 @@ services:
     environment:
       - PORT=8080
       - REPLICA_URLS=http://replica1:5001,http://replica2:5002,http://replica3:5003
+      - DOCKER_ENV=true
     ports:
       - "8080:8080"
     depends_on:
       - replica1
       - replica2
       - replica3
+    networks:
+      - raft-network
+    restart: unless-stopped
+  
+  frontend:
+    image: nginx:alpine
+    volumes:
+      - ./frontend:/usr/share/nginx/html
+    ports:
+      - "3000:80"
+    depends_on:
+      - gateway
+    networks:
+      - raft-network
 
   replica1:
     image: node:18
@@ -26,8 +41,18 @@ services:
     environment:
       - REPLICA_ID=1
       - PORT=5001
+      - DOCKER_ENV=true
     ports:
       - "5001:5001"
+    networks:
+      - raft-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
 
   replica2:
     image: node:18
@@ -38,8 +63,18 @@ services:
     environment:
       - REPLICA_ID=2
       - PORT=5002
+      - DOCKER_ENV=true
     ports:
       - "5002:5002"
+    networks:
+      - raft-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
 
   replica3:
     image: node:18
@@ -50,6 +85,19 @@ services:
     environment:
       - REPLICA_ID=3
       - PORT=5003
+      - DOCKER_ENV=true
     ports:
       - "5003:5003"
+    networks:
+      - raft-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
 
+networks:
+  raft-network:
+    driver: bridge

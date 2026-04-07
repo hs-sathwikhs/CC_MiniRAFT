@@ -3,17 +3,21 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MiniRAFT Whiteboard</title>
+  <title>MiniRAFT Collaborative Whiteboard</title>
   <style>
     :root {
-      --bg: #f3f6fb;
-      --panel: #ffffff;
-      --text: #1f2937;
-      --muted: #6b7280;
-      --line: #d1d5db;
-      --brand: #0ea5e9;
-      --green: #22c55e;
-      --red: #ef4444;
+      --bg-1: #e4f0e4;
+      --bg-2: #f6efe4;
+      --panel: rgba(255, 255, 255, 0.9);
+      --text: #1a2730;
+      --muted: #5f6f79;
+      --line: #c2d0d9;
+      --brand: #0b7a75;
+      --brand-strong: #055f5b;
+      --accent: #f97316;
+      --danger: #d94848;
+      --ok: #1f9d55;
+      --shadow: 0 18px 36px rgba(16, 24, 40, 0.12);
     }
 
     * {
@@ -22,118 +26,363 @@
 
     body {
       margin: 0;
-      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-      background: linear-gradient(180deg, #eef5ff 0%, var(--bg) 100%);
+      font-family: "Avenir Next", "Futura", "Trebuchet MS", sans-serif;
+      background:
+        radial-gradient(circle at 10% 10%, #d8e7d8 0%, rgba(216, 231, 216, 0) 30%),
+        radial-gradient(circle at 90% 90%, #ffe3c9 0%, rgba(255, 227, 201, 0) 35%),
+        linear-gradient(140deg, var(--bg-1), var(--bg-2));
       color: var(--text);
       min-height: 100vh;
-      padding: 16px;
+      padding: 20px;
     }
 
     .app {
-      max-width: 1000px;
+      max-width: 1200px;
       margin: 0 auto;
       background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 12px;
+      border-radius: 20px;
       overflow: hidden;
-      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(3px);
     }
 
     .topbar {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 12px 16px;
+      padding: 16px 20px;
       border-bottom: 1px solid var(--line);
-      background: #fbfdff;
+      background: linear-gradient(130deg, #f3faf9, #fff9f3);
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .title-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
     }
 
     .title {
       margin: 0;
-      font-size: 18px;
+      font-size: clamp(20px, 3vw, 30px);
+      letter-spacing: 0.4px;
     }
 
-    .status {
+    .subtitle {
+      margin: 0;
       font-size: 13px;
       color: var(--muted);
-      font-weight: 500;
+      font-weight: 600;
+      letter-spacing: 0.3px;
     }
 
-    .toolbar {
-      padding: 10px 16px;
-      border-bottom: 1px solid var(--line);
-      display: flex;
-      gap: 10px;
+    .status-pill {
+      display: inline-flex;
       align-items: center;
+      gap: 8px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      padding: 7px 12px;
+      background: #ffffff;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--muted);
+    }
+
+    .status-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      background: var(--muted);
+      transition: background 0.2s ease;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(250px, 300px) 1fr;
+    }
+
+    .panel {
+      border-right: 1px solid var(--line);
+      background: linear-gradient(180deg, #ffffff, #f8fbfd);
+      padding: 18px;
+      display: grid;
+      gap: 16px;
+      align-content: start;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #ffffff;
+      padding: 12px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .card h2 {
+      margin: 0;
+      font-size: 14px;
+      letter-spacing: 0.4px;
+      color: #334854;
+      text-transform: uppercase;
+    }
+
+    .toolbar-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
     }
 
     button {
       border: none;
       background: var(--brand);
       color: #fff;
-      padding: 8px 14px;
+      padding: 9px 12px;
       border-radius: 8px;
       cursor: pointer;
       font-weight: 600;
+      transition: transform 0.15s ease, background 0.15s ease;
     }
 
     button:hover {
-      opacity: 0.92;
+      background: var(--brand-strong);
+      transform: translateY(-1px);
     }
 
-    .meta {
-      font-size: 13px;
+    button.secondary {
+      background: #e8f2f5;
+      color: #204050;
+    }
+
+    button.secondary:hover {
+      background: #d9eaf0;
+    }
+
+    button.danger {
+      background: var(--danger);
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+      min-width: 115px;
+      flex: 1;
+    }
+
+    .field label {
+      font-size: 12px;
+      font-weight: 700;
       color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .field input[type="color"] {
+      width: 100%;
+      height: 36px;
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 8px;
+      padding: 2px;
+    }
+
+    .field input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .stat {
+      border: 1px dashed var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      background: #fbfeff;
+      display: grid;
+      gap: 2px;
+    }
+
+    .stat .label {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 700;
+    }
+
+    .stat .value {
+      font-size: 18px;
+      font-weight: 700;
+      color: #223541;
     }
 
     .board-wrap {
-      padding: 16px;
+      padding: 20px;
+      display: grid;
+      gap: 10px;
+      align-content: start;
     }
 
     #board {
       display: block;
       width: 100%;
-      max-width: 960px;
-      height: 500px;
-      border: 2px dashed #94a3b8;
-      border-radius: 10px;
+      height: min(68vh, 640px);
+      border: 2px dashed #86a2b1;
+      border-radius: 14px;
       background: #fff;
-      margin: 0 auto;
       cursor: crosshair;
+      box-shadow: inset 0 1px 10px rgba(20, 30, 50, 0.06);
+      touch-action: none;
+    }
+
+    .legend {
+      font-size: 13px;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .kbd {
+      border: 1px solid var(--line);
+      border-bottom-width: 2px;
+      border-radius: 6px;
+      background: #ffffff;
+      padding: 2px 6px;
+      font-weight: 700;
+      color: #344d5d;
+      font-size: 12px;
+    }
+
+    .client-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border-radius: 999px;
+      background: #f4fafb;
+      border: 1px solid var(--line);
+      font-size: 12px;
+      font-weight: 700;
+      color: #355366;
+    }
+
+    .swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(0, 0, 0, 0.2);
+    }
+
+    @media (max-width: 940px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .panel {
+        border-right: none;
+        border-bottom: 1px solid var(--line);
+      }
+
+      #board {
+        height: min(56vh, 460px);
+      }
     }
   </style>
 </head>
 <body>
   <main class="app">
-
     <header class="topbar">
-      <h1 class="title">MiniRAFT Whiteboard</h1>
-      <span class="status" id="status"> Connecting...</span>
+      <div class="title-wrap">
+        <h1 class="title">MiniRAFT Collaborative Whiteboard</h1>
+        <p class="subtitle">Real-time sketching over WebSocket broadcast</p>
+      </div>
+      <div class="status-pill">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="status">Connecting...</span>
+      </div>
     </header>
 
-    <section class="toolbar">
-      <button id="clearBtn" type="button">Clear Board</button>
-      <span class="meta">Click and drag on the board to draw.</span>
-    </section>
+    <div class="layout">
+      <aside class="panel">
+        <section class="card">
+          <h2>Brush</h2>
+          <div class="toolbar-group">
+            <div class="field">
+              <label for="colorPicker">Color</label>
+              <input id="colorPicker" type="color" value="#0b7a75" />
+            </div>
+            <div class="field">
+              <label for="brushSize">Size <span id="brushSizeValue">3</span>px</label>
+              <input id="brushSize" type="range" min="1" max="18" step="1" value="3" />
+            </div>
+          </div>
+          <div class="toolbar-group">
+            <button id="penBtn" type="button">Pen</button>
+            <button id="eraserBtn" class="secondary" type="button">Eraser</button>
+          </div>
+        </section>
 
-    <section class="board-wrap">
-      <canvas id="board" width="960" height="500"></canvas>
-    </section>
+        <section class="card">
+          <h2>Actions</h2>
+          <div class="toolbar-group">
+            <button id="undoBtn" class="secondary" type="button">Undo</button>
+            <button id="clearLocalBtn" class="secondary" type="button">Clear Local</button>
+            <button id="clearAllBtn" class="danger" type="button">Clear For Everyone</button>
+            <button id="exportBtn" class="secondary" type="button">Export PNG</button>
+          </div>
+        </section>
 
+        <section class="card">
+          <h2>Session</h2>
+          <div class="meta-grid">
+            <div class="stat">
+              <span class="label">Total Strokes</span>
+              <span class="value" id="strokeCount">0</span>
+            </div>
+            <div class="stat">
+              <span class="label">Reconnects</span>
+              <span class="value" id="reconnectCount">0</span>
+            </div>
+          </div>
+          <div class="client-chip">
+            <span class="swatch" id="clientSwatch"></span>
+            <span id="clientInfo">Client: pending...</span>
+          </div>
+        </section>
+      </aside>
+
+      <section class="board-wrap">
+        <canvas id="board" aria-label="Collaborative whiteboard canvas"></canvas>
+        <div class="legend">
+          <span>Draw with mouse, stylus, or touch. Strokes broadcast in real time.</span>
+          <span>
+            Shortcuts:
+            <span class="kbd">P</span>
+            <span class="kbd">E</span>
+            <span class="kbd">Ctrl/Cmd+Z</span>
+          </span>
+        </div>
+      </section>
+    </div>
   </main>
 
   <script src="./canvas.js"></script>
-
-  <script>
-    // Clear board button
-    const clearBtn = document.getElementById("clearBtn");
-    const board = document.getElementById("board");
-    const boardCtx = board.getContext("2d");
-
-    clearBtn.addEventListener("click", () => {
-      boardCtx.clearRect(0, 0, board.width, board.height);
-    });
-  </script>
-
 </body>
 </html>
