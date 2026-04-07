@@ -162,6 +162,8 @@ Returns detailed gateway statistics.
   "totalBroadcasts": 120,
   "strokesForwarded": 80,
   "strokesFailed": 2,
+  "clearsForwarded": 3,
+  "clearsFailed": 0,
   "knownLeader": "1",
   "knownLeaderUrl": "http://localhost:5001",
   "committedStrokesSeen": 120,
@@ -171,6 +173,9 @@ Returns detailed gateway statistics.
   "healthMonitoringActive": true,
   "leaderFailureCount": 0,
   "lastHealthCheck": 1712456789000,
+  "validationFailures": 8,
+  "rateLimitHits": 4,
+  "activeRateLimits": 2,
   "uptime": 123.45
 }
 ```
@@ -206,8 +211,18 @@ Manually trigger leader discovery (returns current leader).
     "y0": 150,
     "x1": 105,
     "y1": 155,
-    "color": "#ff0000"
+    "color": "#ff0000",
+    "width": 2,
+    "tool": "pen"
   }
+}
+```
+
+**Clear Canvas:**
+```json
+{
+  "type": "clear",
+  "clientId": "client-abc123"
 }
 ```
 
@@ -254,13 +269,51 @@ Manually trigger leader discovery (returns current leader).
 }
 ```
 
+**Stroke Acknowledgment:**
+```json
+{
+  "type": "ack",
+  "message": "Stroke forwarded to leader",
+  "leaderId": "1",
+  "timestamp": 1712456789000
+}
+```
+
+**Clear Acknowledgment:**
+```json
+{
+  "type": "ack",
+  "message": "Clear command forwarded to leader",
+  "leaderId": "1",
+  "timestamp": 1712456789000
+}
+```
+
 **Error:**
 ```json
 {
   "type": "error",
   "message": "Failed to forward stroke to leader",
-  "error": "No leader available",
+  "error": "Service temporarily unavailable",
   "retry": true
+}
+```
+
+**Validation Error:**
+```json
+{
+  "type": "error",
+  "message": "x0 must be a finite number",
+  "validation": false
+}
+```
+
+**Rate Limit Error:**
+```json
+{
+  "type": "error",
+  "message": "Rate limit exceeded. Please slow down.",
+  "rateLimited": true
 }
 ```
 
@@ -280,6 +333,11 @@ The gateway expects the following endpoints on each replica:
 - Body: `{ stroke: {...} }`
 - Returns: `{ success: true/false, entry?: {...} }`
 - Used for: Forwarding client strokes to leader
+
+**`POST /clear`**
+- Body: `{ clientId: "..." }`
+- Returns: `{ success: true/false, entry?: {...} }`
+- Used for: Forwarding clear commands to leader
 
 **`GET /committed?from=N`**
 - Query param: `from` (start index, inclusive)
@@ -346,6 +404,8 @@ All logs follow this format:
 **Forwarding Metrics:**
 - `strokesForwarded`: Successfully forwarded to leader
 - `strokesFailed`: Failed forwarding attempts
+- `clearsForwarded`: Successfully forwarded clear commands
+- `clearsFailed`: Failed clear attempts
 
 **Broadcasting Metrics:**
 - `totalBroadcasts`: Strokes sent to clients
@@ -357,6 +417,11 @@ All logs follow this format:
 - `healthMonitoringActive`: Leader health checks running
 - `leaderFailureCount`: Consecutive failures
 - `lastHealthCheck`: Timestamp of last success
+
+**Security Metrics:**
+- `validationFailures`: Total rejected strokes
+- `rateLimitHits`: Total rate-limited requests
+- `activeRateLimits`: Clients currently tracked
 
 ---
 
@@ -376,18 +441,42 @@ All logs follow this format:
 
 ### Security
 
-**Current State:**
-- No authentication/authorization
-- No TLS/SSL (assumes reverse proxy)
-- No rate limiting
-- No input validation
+**Current State (Production-Ready):**
+- ✅ **Input Validation**: All stroke data validated before forwarding
+- ✅ **Rate Limiting**: 100 requests/second per client with violation tracking
+- ✅ **Error Sanitization**: Internal details never exposed to clients
+- ✅ **Request Size Limits**: 2MB maximum payload size
+- ✅ **Response Validation**: Replica responses validated before processing
+- ⚠️ **No Authentication**: Any client can connect (suitable for educational use)
+- ⚠️ **No TLS**: Assumes reverse proxy handles encryption
 
-**Production Recommendations:**
-- Add WebSocket authentication (JWT tokens)
-- Use WSS (WebSocket over TLS)
-- Implement rate limiting per client
-- Add input validation for stroke data
-- Use reverse proxy (nginx/traefik) for TLS termination
+**Input Validation:**
+```javascript
+// Stroke validation checks:
+// - All coordinates are finite numbers
+// - Coordinate limits (prevent DoS via huge numbers)
+// - Width between 1-100 (if provided)
+// - Color in #RRGGBB format (if provided)
+// - Tool is 'pen' or 'eraser' (if provided)
+```
+
+**Rate Limiting:**
+- Max 100 requests per second per client
+- Violation tracking (5 violations = 60 second block)
+- Metrics tracked in `/stats` endpoint
+
+**Error Sanitization:**
+- Internal URLs replaced with `[REDACTED_URL]`
+- IP addresses replaced with `[REDACTED_IP]`
+- Stack traces removed
+- Generic messages for common errors
+
+**Production Recommendations (Optional):**
+- Add JWT authentication for multi-tenant use
+- Use WSS (WebSocket over TLS) via reverse proxy
+- Add CORS configuration for specific origins
+- Implement audit logging for compliance
+- Add circuit breakers for replica calls
 
 ### Error Handling
 
