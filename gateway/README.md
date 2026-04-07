@@ -8,7 +8,7 @@
 The Gateway is the traffic controller for the entire Mini-RAFT system. It:
 - Accepts WebSocket connections from multiple browser clients
 - Routes drawing strokes to the current RAFT leader replica
-- Broadcasts committed strokes back to all connected clients
+- Polls for committed entries and broadcasts them to all connected clients
 - Handles leader failovers transparently without disconnecting clients
 
 ## Development Progress
@@ -35,54 +35,91 @@ The Gateway is the traffic controller for the entire Mini-RAFT system. It:
 - [x] Fixed exponential backoff (was linear)
 - [x] **Deliverable**: Strokes forwarded to leader with automatic discovery ✓
 
-## ⚠️ Known Issues & Integration Dependencies
+### ✅ Day 3: Broadcasting Committed Entries (COMPLETED)
+- [x] Fixed endpoint mismatch: `/client-stroke` → `/stroke` (matches replica API)
+- [x] Implemented `pollCommittedEntries()` - fetch new commits every 200ms
+- [x] Implemented `broadcastStroke()` - send strokes to all WebSocket clients
+- [x] Added stroke history cache with deduplication
+- [x] Implemented full-log sync on client connection
+- [x] Added broadcasting metrics to `/stats` endpoint
+- [x] Started commit polling on server startup
+- [x] Removed test artifacts (test-day2.html)
+- [x] **Deliverable**: Real-time stroke synchronization across all clients ✓
 
-### 🔴 Missing Replica Endpoint (Blocking Full Day 2 Testing)
+### ✅ Day 4: Failover & Health Monitoring (COMPLETED)
+- [x] Implemented periodic leader health checks (every 5 seconds)
+- [x] Added automatic leader rediscovery on failure detection
+- [x] Implemented failure threshold (2 consecutive failures)
+- [x] Enhanced error handling during elections
+- [x] Added graceful shutdown for monitoring intervals
+- [x] Updated `/stats` endpoint with failover metrics
+- [x] **Deliverable**: Seamless failover with zero client disconnections ✓
 
-**Issue**: Gateway forwards strokes to `POST /client-stroke` endpoint, but replicas don't expose this endpoint yet.
+## Architecture
 
-**Impact**: 
-- Leader discovery works ✅
-- Stroke forwarding will fail with HTTP 404 ❌
-- Cannot test end-to-end flow until replica endpoint exists
+### Data Flow (Day 3-4)
 
-**Owner**: Satwik Bankapur (replica implementation)
-
-**Scheduled Fix**: Day 4 in Satwik B's schedule
-
-**Required Endpoint**:
-```javascript
-// Replicas need to implement:
-app.post("/client-stroke", (req, res) => {
-    // Accept stroke from gateway
-    // Append to RAFT log
-    // Replicate to followers
-    // Return success/failure
-    res.json({ ok: true, /* ... */ });
-});
+```
+Frontend Canvas
+    │
+    │ WebSocket: { type: "stroke", stroke: {...} }
+    ↓
+Gateway (port 8080)
+    │
+    │ HTTP POST /stroke
+    ↓
+RAFT Leader (port 5001/5002/5003)
+    │
+    │ Replicates to followers
+    │ Commits when majority acknowledges
+    ↓
+Gateway polls /committed (200ms intervals)
+    │
+    │ Detects new commits
+    │ Broadcasts to all clients
+    ↓
+All Frontend Clients
+    │
+    └─ Real-time synchronized drawing
+    
+┌─────────────────────────────────┐
+│ Background: Health Monitoring   │
+│ - Checks leader every 5s        │
+│ - Detects failures (2x timeout) │
+│ - Auto-rediscovers new leader   │
+│ - No client disconnections      │
+└─────────────────────────────────┘
 ```
 
-**Workaround**: Gateway code is correct and will work once endpoint is added. Currently documented as known limitation.
+### Polling Strategy
 
-**Tracking**: GitHub issue [to be created]
+Instead of callbacks, the gateway uses **active polling**:
+- Polls `/committed?fromIndex=N` every 200ms
+- Tracks last seen commit index
+- Deduplicates using `{term}-{index}` keys
+- Low latency (~200ms) for stroke appearance
 
-### Other Dependencies
+**Why polling?** No changes needed to replica code - works with existing API.
 
-- Day 3 (Broadcasting) depends on leader calling gateway's `/replica-commit` endpoint
-- Day 4 (Failover) depends on full RAFT election working
-- Full system testing requires all components integrated
+### Failover Strategy (Day 4)
 
-### 🔜 Day 3: Broadcasting Committed Entries (PENDING)
-- [ ] Implement `POST /replica-commit` endpoint
-- [ ] Cache committed entries with deduplication
-- [ ] Broadcast to all WebSocket clients
-- [ ] Real-time synchronization across tabs
+The gateway handles leader failures transparently:
 
-### 🔜 Day 4: Failover & Re-routing (PENDING)
-- [ ] Periodic leader health checks
-- [ ] Automatic rediscovery on failure
-- [ ] Request queueing during elections
-- [ ] Seamless failover demonstration
+**Detection:**
+- Health check every 5 seconds via `/health` endpoint
+- Verifies replica still has `role: "leader"`
+- 2 consecutive failures trigger rediscovery
+
+**Recovery:**
+1. Clear cached leader URL/ID
+2. Run `discoverLeader()` to find new leader
+3. Resume polling and forwarding automatically
+4. Clients stay connected throughout failover
+
+**During Elections:**
+- Commit polling gracefully handles timeouts
+- Stroke forwarding retries with exponential backoff
+- No error spam in logs during normal elections
 
 ### 🔜 Day 5: Dashboard & Monitoring (PENDING)
 - [ ] Create `dashboard.html`
@@ -149,16 +186,23 @@ Returns gateway health status
 ```
 
 #### `GET /stats`
-Returns gateway statistics (updated for Day 2)
+Returns gateway statistics (updated for Day 4)
 ```json
 {
   "connectedClients": 2,
   "totalMessagesReceived": 15,
-  "totalBroadcasts": 0,
+  "totalBroadcasts": 12,
   "strokesForwarded": 8,
   "strokesFailed": 2,
   "knownLeader": "1",
   "knownLeaderUrl": "http://localhost:5001",
+  "committedStrokesSeen": 12,
+  "lastCommitIndex": 11,
+  "strokeHistorySize": 12,
+  "pollingActive": true,
+  "healthMonitoringActive": true,
+  "leaderFailureCount": 0,
+  "lastHealthCheck": 1712456789000,
   "uptime": 123.45
 }
 ```
@@ -174,24 +218,42 @@ Manually trigger leader discovery (new in Day 2)
 }
 ```
 
-#### WebSocket Messages (Day 2)
+#### WebSocket Messages (Day 3)
 
-**Send Stroke:**
+**Client Sends Stroke:**
 ```javascript
 ws.send(JSON.stringify({
   type: 'stroke',
-  content: 'test stroke data',
-  timestamp: Date.now()
+  clientId: 'client-abc123',
+  stroke: {
+    x0: 100, y0: 150,
+    x1: 105, y1: 155,
+    color: '#ff0000'
+  }
 }));
 ```
 
-**Receive Acknowledgment:**
+**Gateway Broadcasts Committed Stroke:**
 ```json
 {
-  "type": "ack",
-  "message": "Stroke forwarded to leader",
-  "leaderId": "1",
-  "timestamp": 1775316994000
+  "type": "stroke",
+  "stroke": {
+    "x0": 100, "y0": 150,
+    "x1": 105, "y1": 155,
+    "color": "#ff0000"
+  }
+}
+```
+
+**On Connection - Full Canvas Sync:**
+```json
+{
+  "type": "full-log",
+  "strokes": [
+    { "x0": 10, "y0": 20, "x1": 15, "y1": 25, "color": "#00ff00" },
+    { "x0": 100, "y0": 150, "x1": 105, "y1": 155, "color": "#ff0000" }
+  ],
+  "count": 2
 }
 ```
 

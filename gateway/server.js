@@ -37,6 +37,18 @@ let broadcastCount = 0;              // Total broadcasts sent
 let strokesForwarded = 0;            // Total strokes forwarded to leader
 let strokesFailed = 0;               // Total strokes that failed to forward
 
+// Day 3: Broadcasting state
+let committedStrokeIds = new Set();  // Track seen stroke IDs for deduplication
+let lastCommitIndex = -1;            // Last commit index we've seen
+let strokeHistory = [];              // Cache of all committed strokes for new clients
+let pollingInterval = null;          // Interval handle for commit polling
+
+// Day 4: Failover & health monitoring
+let healthCheckInterval = null;      // Interval handle for leader health checks
+let leaderFailureCount = 0;          // Consecutive leader health check failures
+let lastHealthCheck = null;          // Timestamp of last successful health check
+const MAX_LEADER_FAILURES = 2;       // Leader is considered down after this many failures
+
 // ── Logging Helper ─────────────────────────────────────────────────────────
 function logInfo(message, data = {}) {
     const timestamp = new Date().toISOString();
@@ -227,15 +239,15 @@ async function forwardStrokeToLeader(strokeData, maxRetries = 3) {
                 continue;
             }
             
-            // Forward stroke to leader's /client-stroke endpoint
+            // Forward stroke to leader's /stroke endpoint (Day 3: Fixed endpoint)
             logInfo("Forwarding stroke to leader", { 
                 leaderId: knownLeaderId,
                 attempt: attempts
             });
             
             const response = await axios.post(
-                `${leaderUrl}/client-stroke`,
-                strokeData,
+                `${leaderUrl}/stroke`,
+                { stroke: strokeData.stroke },  // Replica expects { stroke: {...} }
                 { timeout: 1000 }
             );
             
@@ -279,6 +291,233 @@ async function forwardStrokeToLeader(strokeData, maxRetries = 3) {
     };
 }
 
+// ── Day 3: Broadcasting Committed Entries ──────────────────────────────────
+
+/**
+ * Broadcast stroke to all connected WebSocket clients
+ * @param {object} stroke - Stroke data to broadcast
+ */
+function broadcastStroke(stroke) {
+    const message = {
+        type: "stroke",
+        stroke: stroke
+    };
+    
+    let successCount = 0;
+    connectedClients.forEach(ws => {
+        if (safeSend(ws, message)) {
+            successCount++;
+        }
+    });
+    
+    broadcastCount++;
+    logInfo("Broadcasted stroke to clients", { 
+        successCount, 
+        totalClients: connectedClients.size 
+    });
+}
+
+/**
+ * Poll for newly committed entries from the leader
+ * Runs periodically to detect new commits and broadcast them
+ */
+async function pollCommittedEntries() {
+    try {
+        // Ensure we know who the leader is
+        const leaderUrl = await ensureLeaderUrl();
+        if (!leaderUrl) {
+            return; // No leader available, will retry next poll
+        }
+        
+        // Fetch committed entries from the leader
+        // Query from lastCommitIndex + 1 to get only new entries
+        const response = await axios.get(
+            `${leaderUrl}/committed?fromIndex=${lastCommitIndex + 1}`,
+            { timeout: 500 }
+        );
+        
+        if (response.data && response.data.entries) {
+            const newEntries = response.data.entries;
+            
+            // Process each new committed entry
+            for (const entry of newEntries) {
+                // Generate unique ID for deduplication
+                const strokeId = `${entry.term}-${entry.index}`;
+                
+                // Skip if we've already seen this stroke
+                if (committedStrokeIds.has(strokeId)) {
+                    continue;
+                }
+                
+                // Mark as seen and add to history
+                committedStrokeIds.add(strokeId);
+                strokeHistory.push(entry.stroke);
+                
+                // Update last seen commit index
+                if (entry.index > lastCommitIndex) {
+                    lastCommitIndex = entry.index;
+                }
+                
+                // Broadcast to all connected clients
+                broadcastStroke(entry.stroke);
+                
+                logInfo("New commit detected and broadcasted", {
+                    index: entry.index,
+                    term: entry.term,
+                    commitIndex: response.data.commitIndex
+                });
+            }
+        }
+        
+    } catch (error) {
+        // Day 4: Enhanced error handling for leader failures
+        if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
+            // Leader might be down - health check will handle rediscovery
+            // Don't spam logs during normal elections
+        } else if (error.response && error.response.status === 404) {
+            // Endpoint not found - might be talking to wrong replica
+            logError("Committed endpoint not found on leader", error);
+            knownLeaderUrl = null;
+            knownLeaderId = null;
+        } else {
+            // Unexpected error
+            logError("Error polling committed entries", error);
+        }
+    }
+}
+
+/**
+ * Start polling for committed entries
+ * Polls every 200ms for low-latency updates
+ */
+function startCommitPolling() {
+    if (pollingInterval) {
+        return; // Already polling
+    }
+    
+    logInfo("Starting commit polling", { interval: "200ms" });
+    
+    // Poll immediately on start
+    pollCommittedEntries();
+    
+    // Then poll every 200ms
+    pollingInterval = setInterval(pollCommittedEntries, 200);
+}
+
+/**
+ * Stop polling for committed entries
+ */
+function stopCommitPolling() {
+    if (pollingInterval) {
+        clearInterval(pollingInterval);
+        pollingInterval = null;
+        logInfo("Stopped commit polling");
+    }
+}
+
+// ── Day 4: Leader Health Monitoring & Failover ────────────────────────────
+
+/**
+ * Perform health check on current known leader
+ * Detects leader failures and triggers automatic rediscovery
+ */
+async function checkLeaderHealth() {
+    // Skip if we don't have a known leader
+    if (!knownLeaderUrl || !knownLeaderId) {
+        return;
+    }
+    
+    try {
+        const response = await axios.get(
+            `${knownLeaderUrl}/health`,
+            { timeout: 1000 }
+        );
+        
+        // Verify this replica is still the leader
+        if (response.data && response.data.role === 'leader') {
+            // Leader is healthy
+            leaderFailureCount = 0;
+            lastHealthCheck = Date.now();
+            
+            logInfo("Leader health check passed", {
+                leaderId: knownLeaderId,
+                term: response.data.term,
+                logLength: response.data.logLength
+            });
+        } else {
+            // Replica is no longer the leader
+            logInfo("Leader has stepped down", {
+                oldLeaderId: knownLeaderId,
+                currentRole: response.data.role,
+                reportedLeader: response.data.leader
+            });
+            
+            // Force rediscovery
+            knownLeaderUrl = null;
+            knownLeaderId = null;
+            leaderFailureCount = 0;
+            
+            // Attempt immediate rediscovery
+            await discoverLeader();
+        }
+        
+    } catch (error) {
+        leaderFailureCount++;
+        
+        logError(`Leader health check failed (${leaderFailureCount}/${MAX_LEADER_FAILURES})`, error);
+        
+        // If leader has failed multiple times, force rediscovery
+        if (leaderFailureCount >= MAX_LEADER_FAILURES) {
+            logInfo("Leader appears to be down - forcing rediscovery", {
+                oldLeaderId: knownLeaderId,
+                failureCount: leaderFailureCount
+            });
+            
+            // Clear cached leader
+            knownLeaderUrl = null;
+            knownLeaderId = null;
+            leaderFailureCount = 0;
+            
+            // Attempt to discover new leader
+            try {
+                await discoverLeader();
+                logInfo("New leader discovered after failover");
+            } catch (discoveryError) {
+                logError("Failed to discover new leader - cluster may be in election", discoveryError);
+            }
+        }
+    }
+}
+
+/**
+ * Start periodic leader health monitoring
+ * Checks leader health every 5 seconds
+ */
+function startHealthMonitoring() {
+    if (healthCheckInterval) {
+        return; // Already monitoring
+    }
+    
+    logInfo("Starting leader health monitoring", { interval: "5s" });
+    
+    // Perform initial health check after 5 seconds
+    setTimeout(checkLeaderHealth, 5000);
+    
+    // Then check every 5 seconds
+    healthCheckInterval = setInterval(checkLeaderHealth, 5000);
+}
+
+/**
+ * Stop leader health monitoring
+ */
+function stopHealthMonitoring() {
+    if (healthCheckInterval) {
+        clearInterval(healthCheckInterval);
+        healthCheckInterval = null;
+        logInfo("Stopped health monitoring");
+    }
+}
+
 // ── WebSocket Connection Handling ──────────────────────────────────────────
 
 wss.on("connection", (ws, req) => {
@@ -297,6 +536,20 @@ wss.on("connection", (ws, req) => {
         message: "Connected to Mini-RAFT Gateway",
         clientId: clientId
     });
+
+    // Day 3: Send full stroke history for synchronization
+    if (strokeHistory.length > 0) {
+        safeSend(ws, {
+            type: "full-log",
+            strokes: strokeHistory,
+            count: strokeHistory.length
+        });
+        
+        logInfo("Sent full-log to new client", { 
+            clientId, 
+            strokeCount: strokeHistory.length 
+        });
+    }
 
     // Handle incoming messages from browser
     ws.on("message", async (rawMessage) => {
@@ -398,6 +651,15 @@ app.get("/stats", (req, res) => {
         strokesFailed: strokesFailed,
         knownLeader: knownLeaderId,
         knownLeaderUrl: knownLeaderUrl,
+        // Day 3: Broadcasting stats
+        committedStrokesSeen: committedStrokeIds.size,
+        lastCommitIndex: lastCommitIndex,
+        strokeHistorySize: strokeHistory.length,
+        pollingActive: !!pollingInterval,
+        // Day 4: Failover stats
+        healthMonitoringActive: !!healthCheckInterval,
+        leaderFailureCount: leaderFailureCount,
+        lastHealthCheck: lastHealthCheck,
         uptime: process.uptime()
     });
 });
@@ -556,9 +818,9 @@ app.get("/", (req, res) => {
     `);
 });
 
-// Serve Day 2 test page
+// Serve Day 2 test page (removed - use frontend instead)
 app.get("/test", (req, res) => {
-    res.sendFile(__dirname + "/test-day2.html");
+    res.redirect("/");
 });
 
 // ── Server Startup ─────────────────────────────────────────────────────────
@@ -571,18 +833,31 @@ server.listen(PORT, () => {
     });
     console.log("");
     console.log("═══════════════════════════════════════════════════════════");
-    console.log("  Mini-RAFT Gateway Server - Day 2: Leader Discovery");
+    console.log("  Mini-RAFT Gateway Server - Day 4: Failover Handling");
     console.log("═══════════════════════════════════════════════════════════");
     console.log(`  URL: http://localhost:${PORT}`);
     console.log(`  Connected Clients: 0`);
     console.log(`  Replica URLs: ${REPLICA_URLS.join(", ")}`);
+    console.log(`  Commit Polling: Every 200ms`);
+    console.log(`  Health Monitoring: Every 5s`);
     console.log("═══════════════════════════════════════════════════════════");
+    
+    // Day 3: Start polling for committed entries
+    startCommitPolling();
+    
+    // Day 4: Start leader health monitoring
+    startHealthMonitoring();
     console.log("");
 });
 
 // Graceful shutdown
 process.on("SIGTERM", () => {
     logInfo("Received SIGTERM, shutting down gracefully");
+    
+    // Stop monitoring
+    stopCommitPolling();
+    stopHealthMonitoring();
+    
     server.close(() => {
         logInfo("Server closed");
         process.exit(0);
