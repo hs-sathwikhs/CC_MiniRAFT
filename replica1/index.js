@@ -1,5 +1,7 @@
 const express = require("express");
 const axios = require("axios");
+const fs = require("fs");
+const path = require("path");
 const app = express();
 app.use(express.json());
 
@@ -10,6 +12,7 @@ app.use(express.json());
 // -- Node Identity -------------------------------------------------------------
 const REPLICA_ID = process.env.REPLICA_ID || "1";
 const PORT = process.env.PORT || 5001;
+const RAFT_STATE_FILE = path.join(__dirname, "raft-state.json");
 
 // Detect environment: Docker uses service names, local uses localhost
 const IS_DOCKER = process.env.REPLICA_URLS || process.env.DOCKER_ENV;
@@ -84,6 +87,73 @@ function log(category, message) {
     console.log(`[${timestamp}] [R${REPLICA_ID}|T${state.currentTerm}|${roleIcon}] [${category}] ${message}`);
 }
 
+function normalizePersistedLog(logEntries) {
+    if (!Array.isArray(logEntries)) {
+        return [];
+    }
+
+    const sorted = logEntries
+        .filter((entry) => entry && Number.isInteger(entry.index) && entry.index >= 0 && Number.isInteger(entry.term))
+        .sort((a, b) => a.index - b.index);
+
+    const normalized = [];
+    for (const entry of sorted) {
+        if (entry.index !== normalized.length) {
+            break;
+        }
+        normalized.push({ ...entry, committed: Boolean(entry.committed) });
+    }
+
+    return normalized;
+}
+
+function loadStateFromDisk() {
+    try {
+        if (!fs.existsSync(RAFT_STATE_FILE)) {
+            return;
+        }
+
+        const raw = fs.readFileSync(RAFT_STATE_FILE, "utf8");
+        const parsed = JSON.parse(raw);
+
+        state.currentTerm = Number.isInteger(parsed.currentTerm) && parsed.currentTerm >= 0 ? parsed.currentTerm : 0;
+        state.votedFor = typeof parsed.votedFor === "string" || parsed.votedFor === null ? parsed.votedFor : null;
+        state.log = normalizePersistedLog(parsed.log);
+
+        const persistedCommitIndex = Number.isInteger(parsed.commitIndex) ? parsed.commitIndex : -1;
+        state.commitIndex = Math.min(Math.max(persistedCommitIndex, -1), state.log.length - 1);
+        state.lastApplied = Number.isInteger(parsed.lastApplied)
+            ? Math.min(Math.max(parsed.lastApplied, -1), state.commitIndex)
+            : state.commitIndex;
+
+        for (let i = 0; i <= state.commitIndex; i++) {
+            if (state.log[i]) {
+                state.log[i].committed = true;
+            }
+        }
+
+        log("PERSIST", `Loaded state (term=${state.currentTerm}, logLength=${state.log.length}, commitIndex=${state.commitIndex})`);
+    } catch (err) {
+        log("PERSIST", `Failed to load state: ${err.message}`);
+    }
+}
+
+function persistState() {
+    try {
+        const snapshot = {
+            currentTerm: state.currentTerm,
+            votedFor: state.votedFor,
+            log: state.log,
+            commitIndex: state.commitIndex,
+            lastApplied: state.lastApplied,
+        };
+
+        fs.writeFileSync(RAFT_STATE_FILE, JSON.stringify(snapshot, null, 2), "utf8");
+    } catch (err) {
+        log("PERSIST", `Failed to save state: ${err.message}`);
+    }
+}
+
 // -- Step Down -----------------------------------------------------------------
 function stepDown(newTerm) {
     if (newTerm > state.currentTerm) {
@@ -91,6 +161,7 @@ function stepDown(newTerm) {
         state.currentTerm = newTerm;
         state.role = "follower";
         state.votedFor = null;
+        persistState();
         stopHeartbeat();
         resetElectionTimer();
     }
@@ -104,6 +175,7 @@ async function startElection() {
     state.role = "candidate";
     state.currentTerm += 1;
     state.votedFor = REPLICA_ID;
+    persistState();
     let votesReceived = 1;
 
     log("ELECTION", `Starting election for term ${state.currentTerm}`);
@@ -150,6 +222,7 @@ async function startElection() {
         log("ELECTION", `Election lost or split vote - will retry`);
         state.role = "follower";
         state.votedFor = null;
+        persistState();
     }
 }
 
@@ -218,7 +291,7 @@ async function sendHeartbeats() {
 // LOG REPLICATION (Day 4)
 // ==============================================================================
 
-async function replicateStroke(stroke) {
+async function replicateLogEntry(entryPayload, entryLabel) {
     if (state.role !== "leader") {
         return { success: false, reason: "not leader", leaderId: state.leaderId };
     }
@@ -226,11 +299,12 @@ async function replicateStroke(stroke) {
     const newEntry = {
         term: state.currentTerm,
         index: state.log.length,
-        stroke: stroke,
+        ...entryPayload,
         committed: false,
     };
     state.log.push(newEntry);
-    log("REPLICATION", `Appended stroke to log at index ${newEntry.index}`);
+    persistState();
+    log("REPLICATION", `Appended ${entryLabel} to log at index ${newEntry.index}`);
 
     let acks = 1;
 
@@ -280,14 +354,35 @@ async function replicateStroke(stroke) {
     log("REPLICATION", `Acks received: ${acks}/${PEERS.length + 1}`);
 
     if (acks >= MAJORITY) {
-        state.log[newEntry.index].committed = true;
+        if (state.log[newEntry.index]) {
+            state.log[newEntry.index].committed = true;
+        }
         state.commitIndex = newEntry.index;
-        log("COMMIT", `Entry COMMITTED at index ${newEntry.index}`);
+        state.lastApplied = Math.max(state.lastApplied, state.commitIndex);
+        persistState();
+        log("COMMIT", `${entryLabel} COMMITTED at index ${newEntry.index}`);
         return { success: true, entry: newEntry };
     } else {
         log("COMMIT", `Not enough acks - entry NOT committed`);
         return { success: false, reason: "no majority" };
     }
+}
+
+async function replicateStroke(stroke) {
+    return replicateLogEntry({ stroke }, "stroke");
+}
+
+async function replicateClear(clientId) {
+    return replicateLogEntry(
+        {
+            stroke: {
+                kind: "clear",
+                source: clientId || "unknown",
+                timestamp: Date.now(),
+            },
+        },
+        "clear command"
+    );
 }
 
 // ==============================================================================
@@ -356,8 +451,10 @@ app.get("/log", (req, res) => {
 });
 
 app.get("/committed", (req, res) => {
-    const fromIndex = parseInt(req.query.from) || 0;
-    const committed = state.log.filter((e, i) => i >= fromIndex && e.committed);
+    const fromIndex = Math.max(0, parseInt(req.query.from, 10) || 0);
+    const committed = state.log
+        .filter((entry) => entry && entry.committed && Number.isInteger(entry.index) && entry.index >= fromIndex)
+        .sort((a, b) => a.index - b.index);
     res.json({ entries: committed, commitIndex: state.commitIndex });
 });
 
@@ -371,6 +468,19 @@ app.post("/stroke", async (req, res) => {
 
     log("STROKE", `Received stroke from client`);
     const result = await replicateStroke(stroke);
+    res.json(result);
+});
+
+app.post("/clear", async (req, res) => {
+    const { clientId } = req.body || {};
+
+    if (state.role !== "leader") {
+        log("CLEAR", `Not leader - redirecting to ${state.leaderId}`);
+        return res.status(403).json({ success: false, reason: "not leader", leaderId: state.leaderId });
+    }
+
+    log("CLEAR", `Received clear command from ${clientId || "unknown"}`);
+    const result = await replicateClear(clientId);
     res.json(result);
 });
 
@@ -398,6 +508,7 @@ app.post("/request-vote", (req, res) => {
 
     if (canVote && candidateLogOk) {
         state.votedFor = candidateId;
+        persistState();
         resetElectionTimer();
         log("VOTE", `Voted for ${candidateId} in term ${term}`);
         return res.json({ voteGranted: true, term: state.currentTerm });
@@ -409,6 +520,8 @@ app.post("/request-vote", (req, res) => {
 
 app.post("/append-entries", (req, res) => {
     const { term, leaderId, entries, prevLogIndex, prevLogTerm, leaderCommit } = req.body;
+    const incomingEntries = Array.isArray(entries) ? entries : [];
+    let stateChanged = false;
 
     if (term < state.currentTerm) {
         log("APPEND", `Rejected: old term ${term}`);
@@ -430,23 +543,47 @@ app.post("/append-entries", (req, res) => {
         }
     }
 
-    if (entries && entries.length > 0) {
-        for (const entry of entries) {
+    if (incomingEntries.length > 0) {
+        let expectedIndex = prevLogIndex + 1;
+        for (const entry of incomingEntries) {
+            if (!entry || !Number.isInteger(entry.index) || !Number.isInteger(entry.term) || entry.index !== expectedIndex) {
+                log("APPEND", `Rejected non-contiguous entries at expected index ${expectedIndex}`);
+                return res.json({ success: false, term: state.currentTerm, logLength: state.log.length, needSync: true });
+            }
+            expectedIndex += 1;
+        }
+
+        for (const entry of incomingEntries) {
             if (state.log[entry.index] && state.log[entry.index].term !== entry.term) {
                 state.log = state.log.slice(0, entry.index);
             }
-            state.log[entry.index] = entry;
+
+            if (entry.index === state.log.length) {
+                state.log.push(entry);
+            } else {
+                state.log[entry.index] = entry;
+            }
         }
-        log("APPEND", `Appended ${entries.length} entries (${entries[0].index}-${entries[entries.length-1].index})`);
+        stateChanged = true;
+        log(
+            "APPEND",
+            `Appended ${incomingEntries.length} entries (${incomingEntries[0].index}-${incomingEntries[incomingEntries.length - 1].index})`
+        );
     }
 
-    if (leaderCommit > state.commitIndex) {
-        const lastNewIndex = entries && entries.length > 0 ? entries[entries.length - 1].index : state.log.length - 1;
+    if (Number.isInteger(leaderCommit) && leaderCommit > state.commitIndex) {
+        const lastNewIndex = incomingEntries.length > 0 ? incomingEntries[incomingEntries.length - 1].index : state.log.length - 1;
         state.commitIndex = Math.min(leaderCommit, lastNewIndex);
+        state.lastApplied = Math.max(state.lastApplied, state.commitIndex);
         for (let i = 0; i <= state.commitIndex; i++) {
             if (state.log[i]) state.log[i].committed = true;
         }
+        stateChanged = true;
         log("COMMIT", `Commit index updated to ${state.commitIndex}`);
+    }
+
+    if (stateChanged) {
+        persistState();
     }
 
     return res.json({ success: true, term: state.currentTerm });
@@ -467,11 +604,13 @@ app.post("/heartbeat", (req, res) => {
     state.leaderId = leaderId;
     resetElectionTimer();
 
-    if (leaderCommit !== undefined && leaderCommit > state.commitIndex) {
+    if (Number.isInteger(leaderCommit) && leaderCommit > state.commitIndex) {
         state.commitIndex = Math.min(leaderCommit, state.log.length - 1);
+        state.lastApplied = Math.max(state.lastApplied, state.commitIndex);
         for (let i = 0; i <= state.commitIndex; i++) {
             if (state.log[i]) state.log[i].committed = true;
         }
+        persistState();
     }
 
     const needSync = leaderCommit > state.log.length - 1;
@@ -499,6 +638,8 @@ app.get("/sync-log", (req, res) => {
 // ==============================================================================
 // STARTUP
 // ==============================================================================
+
+loadStateFromDisk();
 
 app.listen(PORT, () => {
     log("STARTUP", `Replica ${REPLICA_ID} started on port ${PORT}`);
