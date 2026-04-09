@@ -69,7 +69,7 @@ let lastHealthCheck = null;          // Timestamp of last successful health chec
 const MAX_LEADER_FAILURES = 2;       // Leader is considered down after this many failures
 
 // Memory management
-const MAX_STROKE_HISTORY = 1000;     // Cap stroke history to prevent unbounded growth
+const MAX_STROKE_HISTORY = Number(process.env.MAX_STROKE_HISTORY || 10000);     // Cap stroke history to prevent unbounded growth
 
 // Rate limiting
 const rateLimits = new Map();        // clientId -> { count, resetTime, violations }

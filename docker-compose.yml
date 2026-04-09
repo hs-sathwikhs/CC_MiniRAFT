@@ -13,6 +13,12 @@ services:
       - "5001:5001"
     networks:
       - raft-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
 
   replica2:
     build:
@@ -26,6 +32,12 @@ services:
       - "5002:5002"
     networks:
       - raft-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
 
   replica3:
     build:
@@ -39,6 +51,12 @@ services:
       - "5003:5003"
     networks:
       - raft-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
 
 networks:
   raft-network:

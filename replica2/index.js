@@ -154,7 +154,8 @@ function persistState() {
     }
 }
 
-// -- Step Down -----------------------------------------------------------------
+
+// -- Step Down ----------------------------------------------------------------
 function stepDown(newTerm) {
     if (newTerm > state.currentTerm) {
         log("TERM", `Stepping down: discovered higher term ${newTerm} (was ${state.currentTerm})`);
@@ -584,6 +585,19 @@ app.post("/append-entries", (req, res) => {
 
     if (stateChanged) {
         persistState();
+ries.length > 0 ? incomingEntries[incomingEntries.length - 1].index : state.log.length - 1;
+        state.commitIndex = Math.min(leaderCommit, lastNewIndex);
+        state.lastApplied = Math.max(state.lastApplied, state.commitIndex);
+        for (let i = 0; i <= state.commitIndex; i++) {
+            if (state.log[i]) state.log[i].committed = true;
+        }
+        stateChanged = true;
+        log("COMMIT", `Commit index updated to ${state.commitIndex}`);
+    }
+
+    if (stateChanged) {
+        persistState();
+        compactLog();  // Trim old entries to prevent unbounded growth
     }
 
     return res.json({ success: true, term: state.currentTerm });

@@ -59,6 +59,38 @@ if ($dockerAvailable) {
 
 Write-Host ""
 
+# ============================================================================
+# CRITICAL: Kill any existing MiniRaft processes from previous runs
+# ============================================================================
+# This ensures clean startup and prevents port conflicts
+Write-Host "🧹 Force-cleaning any old processes..." -ForegroundColor Yellow
+
+# Kill docker-compose and any Node processes
+& taskkill /F /IM node.exe 2>$null | Out-Null
+& taskkill /F /IM docker-compose.exe 2>$null | Out-Null
+
+Start-Sleep -Seconds 1
+
+# Force docker-compose down to clean containers completely
+if ($dockerAvailable) {
+    Write-Host "🐳 Force-tearing down old Docker containers..." -ForegroundColor Yellow
+    try {
+        & docker-compose down -v --remove-orphans 2>$null | Out-Null
+        Start-Sleep -Seconds 2
+        Write-Host "✓ Docker cleanup complete" -ForegroundColor Green
+    } catch {
+        Write-Host "  (Docker cleanup attempt completed)" -ForegroundColor Gray
+    }
+}
+
+# Clear old logs so we get fresh ones
+if (Test-Path "logs") {
+    Remove-Item -Path "logs" -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "✓ Old logs cleared" -ForegroundColor Green
+}
+
+Write-Host ""
+
 # Function to install dependencies
 function Install-DependenciesIfNeeded {
     param($Path, $Name)
@@ -77,6 +109,12 @@ function Install-DependenciesIfNeeded {
 if (-not (Test-Path "logs")) {
     New-Item -ItemType Directory -Path "logs" | Out-Null
 }
+
+# Clean up old RAFT state files for fresh start
+Write-Host "🧹 Cleaning old RAFT state..." -ForegroundColor Yellow
+Remove-Item -Path "replica1/raft-state.json" -Force -ErrorAction SilentlyContinue
+Remove-Item -Path "replica2/raft-state.json" -Force -ErrorAction SilentlyContinue
+Remove-Item -Path "replica3/raft-state.json" -Force -ErrorAction SilentlyContinue
 
 Write-Host ""
 Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
@@ -137,8 +175,8 @@ try {
     $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     $frontendPath = Join-Path $scriptDir "frontend"
 
-    # Use cmd.exe to ensure PATH is properly resolved
-    $frontend = Start-Process -FilePath "cmd.exe" -ArgumentList "/c npx http-server '$frontendPath' -p 3000 -c-1" -PassThru -RedirectStandardOutput "logs/frontend.log" -RedirectStandardError "logs/frontend-error.log"
+    # Change to frontend directory and start http-server
+    $frontend = Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit", "-Command", "cd '$frontendPath'; npx http-server -p 3000" -PassThru -WindowStyle Normal
     Write-Host "✓ Frontend started (PID: $($frontend.Id))" -ForegroundColor Green
 } catch {
     Write-Host "  ✗ Failed to start frontend: $_" -ForegroundColor Red
@@ -193,6 +231,12 @@ function Stop-AllServices {
     if ($frontend -and !$frontend.HasExited) {
         Stop-Process -Id $frontend.Id -Force -ErrorAction SilentlyContinue
     }
+
+    # Clean up RAFT state files
+    Write-Host "🧹 Cleaning RAFT state files..." -ForegroundColor Yellow
+    Remove-Item -Path "replica1/raft-state.json" -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path "replica2/raft-state.json" -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path "replica3/raft-state.json" -Force -ErrorAction SilentlyContinue
 
     Write-Host "✓ All services stopped" -ForegroundColor Green
     Write-Host ""
