@@ -1,0 +1,501 @@
+
+up to date, audited 77 packages in 3s
+
+24 packages are looking for funding
+  run `npm fund` for details
+
+found 0 vulnerabilities
+[01:31:35.364] [R1|T0|[FOLLOWER]] [STARTUP] Replica 1 started on port 5001
+[01:31:35.366] [R1|T0|[FOLLOWER]] [STARTUP] Peers: http://replica2:5002, http://replica3:5003
+[01:31:35.367] [R1|T0|[FOLLOWER]] [STARTUP] Election timeout: 500-800ms, Heartbeat: 150ms
+[01:31:36.047] [R1|T0|[FOLLOWER]] [ELECTION] Election timeout (677ms) - starting election
+[01:31:36.052] [R1|T1|[CAND]] [ELECTION] Starting election for term 1
+[01:31:36.316] [R1|T1|[CAND]] [VOTE] Vote request from 2 for term 1
+[01:31:36.317] [R1|T1|[CAND]] [VOTE] Vote denied to 2
+[01:31:36.390] [R1|T1|[CAND]] [ELECTION] Peer http://replica2:5002 unreachable
+[01:31:36.391] [R1|T1|[CAND]] [ELECTION] Votes received: 1/3
+[01:31:36.391] [R1|T1|[CAND]] [ELECTION] Election lost or split vote - will retry
+
+up to date, audited 77 packages in 3s
+
+24 packages are looking for funding
+  run `npm fund` for details
+
+found 0 vulnerabilities
+[01:31:35.254] [R2|T0|[FOLLOWER]] [STARTUP] Replica 2 started on port 5002
+[01:31:35.257] [R2|T0|[FOLLOWER]] [STARTUP] Peers: http://replica1:5001, http://replica3:5003
+[01:31:35.257] [R2|T0|[FOLLOWER]] [STARTUP] Election timeout: 500-800ms, Heartbeat: 150ms
+[01:31:36.024] [R2|T0|[FOLLOWER]] [ELECTION] Election timeout (764ms) - starting election
+[01:31:36.029] [R2|T1|[CAND]] [ELECTION] Starting election for term 1
+[01:31:36.325] [R2|T1|[CAND]] [ELECTION] Vote granted from http://replica3:5003
+[01:31:36.328] [R2|T1|[CAND]] [ELECTION] Votes received: 2/3
+[01:31:36.328] [R2|T1|[LEADER]] [LEADER] *** BECAME LEADER for term 1 ***
+[01:31:36.562] [R2|T1|[LEADER]] [VOTE] Vote request from 1 for term 1
+[01:31:36.563] [R2|T1|[LEADER]] [VOTE] Vote denied to 1
+
+up to date, audited 77 packages in 3s
+
+24 packages are looking for funding
+  run `npm fund` for details
+
+found 0 vulnerabilities
+[01:31:35.352] [R3|T0|[FOLLOWER]] [STARTUP] Replica 3 started on port 5003
+[01:31:35.354] [R3|T0|[FOLLOWER]] [STARTUP] Peers: http://replica1:5001, http://replica2:5002
+[01:31:35.354] [R3|T0|[FOLLOWER]] [STARTUP] Election timeout: 500-800ms, Heartbeat: 150ms
+[01:31:36.293] [R3|T0|[FOLLOWER]] [VOTE] Vote request from 2 for term 1
+[01:31:36.294] [R3|T0|[FOLLOWER]] [TERM] Stepping down: discovered higher term 1 (was 0)
+[01:31:36.304] [R3|T1|[FOLLOWER]] [VOTE] Voted for 2 in term 1
+[01:31:36.330] [R3|T1|[FOLLOWER]] [VOTE] Vote request from 1 for term 1
+[01:31:36.331] [R3|T1|[FOLLOWER]] [VOTE] Vote denied to 1
+
+up to date, audited 107 packages in 3s
+
+22 packages are looking for funding
+  run `npm fund` for details
+
+found 0 vulnerabilities
+
+> miniraft-gateway@1.0.0 dev
+> nodemon server.js
+
+[33m[nodemon] 3.1.14[39m
+[33m[nodemon] to restart at any time, enter `rs`[39m
+[33m[nodemon] watching path(s): server.js *.js[39m
+[33m[nodemon] watching extensions: js,json[39m
+[32m[nodemon] starting `node server.js`[39m
+[2026-04-09T01:31:39.857Z] [GATEWAY] 🚀 Gateway server started {"port":8080,"replicas":["http://replica1:5001","http://replica2:5002","http://replica3:5003"],"webSocketReady":true}
+
+═══════════════════════════════════════════════════════════
+  Mini-RAFT Gateway Server - Day 4: Failover Handling
+═══════════════════════════════════════════════════════════
+  URL: http://localhost:8080
+  Connected Clients: 0
+  Replica URLs: http://replica1:5001, http://replica2:5002, http://replica3:5003
+  Commit Polling: Every 200ms
+  Health Monitoring: Every 5s
+═══════════════════════════════════════════════════════════
+[2026-04-09T01:31:39.860Z] [GATEWAY] Starting commit polling {"interval":"200ms"}
+[2026-04-09T01:31:39.861Z] [GATEWAY] Starting leader discovery {"replicas":["http://replica1:5001","http://replica2:5002","http://replica3:5003"]}
+[2026-04-09T01:31:39.903Z] [GATEWAY] Starting leader health monitoring {"interval":"5s"}
+
+[2026-04-09T01:31:39.930Z] [GATEWAY] Received replica statuses {"total":3,"healthy":3}
+[2026-04-09T01:31:39.931Z] [GATEWAY] Leader discovered {"leaderId":"2","leaderUrl":"http://replica2:5002","term":1}
+[2026-04-09T01:31:44.911Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:31:44.912Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:31:49.914Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:31:54.911Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:31:59.912Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:04.913Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:09.908Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:14.909Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:19.912Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:24.910Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:29.909Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:34.909Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:39.903Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:44.906Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:49.904Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:54.908Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:59.908Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:04.909Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:09.902Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:14.902Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:19.902Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:24.903Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:29.904Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:34.903Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:39.898Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:44.898Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:49.900Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:54.900Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:59.901Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:04.901Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:09.896Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:14.897Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:19.901Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:24.898Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:29.900Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:34.902Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:39.896Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:44.896Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:49.897Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:54.897Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:59.897Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:04.897Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:09.892Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:14.892Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:19.893Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:24.893Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:29.893Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:34.895Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:39.890Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:44.891Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:49.890Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:54.891Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:59.893Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:04.895Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:09.893Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:14.893Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:19.889Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:24.892Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:29.894Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:34.891Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:39.890Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:44.890Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:49.892Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:54.890Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:59.891Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:37:04.890Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:37:09.887Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:37:14.889Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:37:19.889Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:37:24.888Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:37:29.890Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:37:34.888Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:37:39.884Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:37:44.885Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+
+up to date, audited 77 packages in 3s
+
+24 packages are looking for funding
+  run `npm fund` for details
+
+found 0 vulnerabilities
+[01:31:35.352] [R3|T0|[FOLLOWER]] [STARTUP] Replica 3 started on port 5003
+[01:31:35.354] [R3|T0|[FOLLOWER]] [STARTUP] Peers: http://replica1:5001, http://replica2:5002
+[01:31:35.354] [R3|T0|[FOLLOWER]] [STARTUP] Election timeout: 500-800ms, Heartbeat: 150ms
+[01:31:36.293] [R3|T0|[FOLLOWER]] [VOTE] Vote request from 2 for term 1
+[01:31:36.294] [R3|T0|[FOLLOWER]] [TERM] Stepping down: discovered higher term 1 (was 0)
+[01:31:36.304] [R3|T1|[FOLLOWER]] [VOTE] Voted for 2 in term 1
+[01:31:36.330] [R3|T1|[FOLLOWER]] [VOTE] Vote request from 1 for term 1
+[01:31:36.331] [R3|T1|[FOLLOWER]] [VOTE] Vote denied to 1
+
+up to date, audited 107 packages in 3s
+
+22 packages are looking for funding
+  run `npm fund` for details
+
+found 0 vulnerabilities
+
+> miniraft-gateway@1.0.0 dev
+> nodemon server.js
+
+[33m[nodemon] 3.1.14[39m
+[33m[nodemon] to restart at any time, enter `rs`[39m
+[33m[nodemon] watching path(s): server.js *.js[39m
+[33m[nodemon] watching extensions: js,json[39m
+[32m[nodemon] starting `node server.js`[39m
+[2026-04-09T01:31:39.857Z] [GATEWAY] 🚀 Gateway server started {"port":8080,"replicas":["http://replica1:5001","http://replica2:5002","http://replica3:5003"],"webSocketReady":true}
+
+═══════════════════════════════════════════════════════════
+  Mini-RAFT Gateway Server - Day 4: Failover Handling
+═══════════════════════════════════════════════════════════
+  URL: http://localhost:8080
+  Connected Clients: 0
+  Replica URLs: http://replica1:5001, http://replica2:5002, http://replica3:5003
+  Commit Polling: Every 200ms
+  Health Monitoring: Every 5s
+═══════════════════════════════════════════════════════════
+[2026-04-09T01:31:39.860Z] [GATEWAY] Starting commit polling {"interval":"200ms"}
+[2026-04-09T01:31:39.861Z] [GATEWAY] Starting leader discovery {"replicas":["http://replica1:5001","http://replica2:5002","http://replica3:5003"]}
+[2026-04-09T01:31:39.903Z] [GATEWAY] Starting leader health monitoring {"interval":"5s"}
+
+[2026-04-09T01:31:39.930Z] [GATEWAY] Received replica statuses {"total":3,"healthy":3}
+[2026-04-09T01:31:39.931Z] [GATEWAY] Leader discovered {"leaderId":"2","leaderUrl":"http://replica2:5002","term":1}
+[2026-04-09T01:31:44.911Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:31:44.912Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:31:49.914Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:31:54.911Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:31:59.912Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:04.913Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:09.908Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:14.909Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:19.912Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:24.910Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:29.909Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:34.909Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:39.903Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:44.906Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:49.904Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:54.908Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:32:59.908Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:04.909Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:09.902Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:14.902Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:19.902Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:24.903Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:29.904Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:34.903Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:39.898Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:44.898Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:49.900Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:54.900Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:33:59.901Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:04.901Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:09.896Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:14.897Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:19.901Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:24.898Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:29.900Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:34.902Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:39.896Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:44.896Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:49.897Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:54.897Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:34:59.897Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:04.897Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:09.892Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:14.892Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:19.893Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:24.893Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:29.893Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:34.895Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:39.890Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:44.891Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:49.890Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:54.891Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:35:59.893Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:04.895Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:09.893Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:14.893Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:19.889Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:24.892Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:29.894Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:34.891Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:39.890Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:44.890Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:49.892Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:54.890Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:36:59.891Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:37:04.890Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:37:09.887Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:37:14.889Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:37:19.889Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:37:24.888Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:37:29.890Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:37:34.888Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:37:39.884Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:37:44.885Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:37:49.885Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:37:54.885Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:37:59.886Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:38:04.887Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:38:09.883Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:38:14.882Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:38:19.883Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:38:24.884Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:38:29.884Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:38:34.884Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:38:39.880Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:38:44.880Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:38:49.880Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:38:54.881Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+[2026-04-09T01:38:59.881Z] [GATEWAY] Leader health check passed {"leaderId":"2","term":1,"logLength":0}
+
+up to date, audited 77 packages in 3s
+
+24 packages are looking for funding
+  run `npm fund` for details
+
+found 0 vulnerabilities
+[01:31:35.364] [R1|T0|[FOLLOWER]] [STARTUP] Replica 1 started on port 5001
+[01:31:35.366] [R1|T0|[FOLLOWER]] [STARTUP] Peers: http://replica2:5002, http://replica3:5003
+[01:31:35.367] [R1|T0|[FOLLOWER]] [STARTUP] Election timeout: 500-800ms, Heartbeat: 150ms
+[01:31:36.047] [R1|T0|[FOLLOWER]] [ELECTION] Election timeout (677ms) - starting election
+[01:31:36.052] [R1|T1|[CAND]] [ELECTION] Starting election for term 1
+[01:31:36.316] [R1|T1|[CAND]] [VOTE] Vote request from 2 for term 1
+[01:31:36.317] [R1|T1|[CAND]] [VOTE] Vote denied to 2
+[01:31:36.390] [R1|T1|[CAND]] [ELECTION] Peer http://replica2:5002 unreachable
+[01:31:36.391] [R1|T1|[CAND]] [ELECTION] Votes received: 1/3
+[01:31:36.391] [R1|T1|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:14.269] [R1|T1|[FOLLOWER]] [ELECTION] Election timeout (724ms) - starting election
+[01:39:14.322] [R1|T2|[CAND]] [ELECTION] Starting election for term 2
+[01:39:14.498] [R1|T2|[CAND]] [ELECTION] Vote granted from http://replica2:5002
+[01:39:14.733] [R1|T2|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:14.733] [R1|T2|[CAND]] [ELECTION] Votes received: 2/3
+[01:39:14.733] [R1|T2|[LEADER]] [LEADER] *** BECAME LEADER for term 2 ***
+
+up to date, audited 77 packages in 3s
+
+24 packages are looking for funding
+  run `npm fund` for details
+
+found 0 vulnerabilities
+[01:31:35.254] [R2|T0|[FOLLOWER]] [STARTUP] Replica 2 started on port 5002
+[01:31:35.257] [R2|T0|[FOLLOWER]] [STARTUP] Peers: http://replica1:5001, http://replica3:5003
+[01:31:35.257] [R2|T0|[FOLLOWER]] [STARTUP] Election timeout: 500-800ms, Heartbeat: 150ms
+[01:31:36.024] [R2|T0|[FOLLOWER]] [ELECTION] Election timeout (764ms) - starting election
+[01:31:36.029] [R2|T1|[CAND]] [ELECTION] Starting election for term 1
+[01:31:36.325] [R2|T1|[CAND]] [ELECTION] Vote granted from http://replica3:5003
+[01:31:36.328] [R2|T1|[CAND]] [ELECTION] Votes received: 2/3
+[01:31:36.328] [R2|T1|[LEADER]] [LEADER] *** BECAME LEADER for term 1 ***
+[01:31:36.562] [R2|T1|[LEADER]] [VOTE] Vote request from 1 for term 1
+[01:31:36.563] [R2|T1|[LEADER]] [VOTE] Vote denied to 1
+[01:39:14.450] [R2|T1|[LEADER]] [VOTE] Vote request from 1 for term 2
+[01:39:14.455] [R2|T1|[LEADER]] [TERM] Stepping down: discovered higher term 2 (was 1)
+[01:39:14.487] [R2|T2|[FOLLOWER]] [VOTE] Voted for 1 in term 2
+[01:39:15.549] [R2|T2|[FOLLOWER]] [ELECTION] Election timeout (799ms) - starting election
+[01:39:15.561] [R2|T3|[CAND]] [ELECTION] Starting election for term 3
+[01:39:15.864] [R2|T3|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:15.865] [R2|T3|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:15.865] [R2|T3|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:15.865] [R2|T3|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:16.213] [R2|T3|[FOLLOWER]] [ELECTION] Election timeout (652ms) - starting election
+[01:39:16.258] [R2|T4|[CAND]] [ELECTION] Starting election for term 4
+[01:39:16.577] [R2|T4|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:16.578] [R2|T4|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:16.578] [R2|T4|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:16.578] [R2|T4|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:17.056] [R2|T4|[FOLLOWER]] [ELECTION] Election timeout (798ms) - starting election
+[01:39:17.065] [R2|T5|[CAND]] [ELECTION] Starting election for term 5
+[01:39:17.368] [R2|T5|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:17.369] [R2|T5|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:17.369] [R2|T5|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:17.369] [R2|T5|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:17.585] [R2|T5|[FOLLOWER]] [ELECTION] Election timeout (520ms) - starting election
+[01:39:17.593] [R2|T6|[CAND]] [ELECTION] Starting election for term 6
+[01:39:17.896] [R2|T6|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:17.897] [R2|T6|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:17.897] [R2|T6|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:17.897] [R2|T6|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:18.178] [R2|T6|[FOLLOWER]] [ELECTION] Election timeout (584ms) - starting election
+[01:39:18.185] [R2|T7|[CAND]] [ELECTION] Starting election for term 7
+[01:39:18.488] [R2|T7|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:18.488] [R2|T7|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:18.488] [R2|T7|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:18.488] [R2|T7|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:18.943] [R2|T7|[FOLLOWER]] [ELECTION] Election timeout (757ms) - starting election
+[01:39:18.952] [R2|T8|[CAND]] [ELECTION] Starting election for term 8
+[01:39:19.255] [R2|T8|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:19.256] [R2|T8|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:19.256] [R2|T8|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:19.256] [R2|T8|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:19.514] [R2|T8|[FOLLOWER]] [ELECTION] Election timeout (561ms) - starting election
+[01:39:19.522] [R2|T9|[CAND]] [ELECTION] Starting election for term 9
+[01:39:19.825] [R2|T9|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:19.826] [R2|T9|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:19.826] [R2|T9|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:19.826] [R2|T9|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:20.185] [R2|T9|[FOLLOWER]] [ELECTION] Election timeout (662ms) - starting election
+[01:39:20.193] [R2|T10|[CAND]] [ELECTION] Starting election for term 10
+[01:39:20.496] [R2|T10|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:20.497] [R2|T10|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:20.497] [R2|T10|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:20.497] [R2|T10|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:20.898] [R2|T10|[FOLLOWER]] [ELECTION] Election timeout (704ms) - starting election
+[01:39:20.906] [R2|T11|[CAND]] [ELECTION] Starting election for term 11
+[01:39:21.209] [R2|T11|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:21.209] [R2|T11|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:21.209] [R2|T11|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:21.209] [R2|T11|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:21.530] [R2|T11|[FOLLOWER]] [ELECTION] Election timeout (623ms) - starting election
+[01:39:21.538] [R2|T12|[CAND]] [ELECTION] Starting election for term 12
+[01:39:21.841] [R2|T12|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:21.841] [R2|T12|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:21.842] [R2|T12|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:21.842] [R2|T12|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:22.194] [R2|T12|[FOLLOWER]] [ELECTION] Election timeout (655ms) - starting election
+[01:39:22.200] [R2|T13|[CAND]] [ELECTION] Starting election for term 13
+[01:39:22.503] [R2|T13|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:22.504] [R2|T13|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:22.504] [R2|T13|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:22.504] [R2|T13|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:22.801] [R2|T13|[FOLLOWER]] [ELECTION] Election timeout (600ms) - starting election
+[01:39:22.810] [R2|T14|[CAND]] [ELECTION] Starting election for term 14
+[01:39:23.112] [R2|T14|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:23.113] [R2|T14|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:23.113] [R2|T14|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:23.113] [R2|T14|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:23.476] [R2|T14|[FOLLOWER]] [ELECTION] Election timeout (665ms) - starting election
+[01:39:23.483] [R2|T15|[CAND]] [ELECTION] Starting election for term 15
+[01:39:23.786] [R2|T15|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:23.786] [R2|T15|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:23.786] [R2|T15|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:23.786] [R2|T15|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:24.165] [R2|T15|[FOLLOWER]] [ELECTION] Election timeout (682ms) - starting election
+[01:39:24.173] [R2|T16|[CAND]] [ELECTION] Starting election for term 16
+[01:39:24.476] [R2|T16|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:24.476] [R2|T16|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:24.476] [R2|T16|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:24.476] [R2|T16|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:24.757] [R2|T16|[FOLLOWER]] [ELECTION] Election timeout (584ms) - starting election
+[01:39:24.765] [R2|T17|[CAND]] [ELECTION] Starting election for term 17
+[01:39:25.066] [R2|T17|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:25.066] [R2|T17|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:25.067] [R2|T17|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:25.067] [R2|T17|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:25.410] [R2|T17|[FOLLOWER]] [ELECTION] Election timeout (645ms) - starting election
+[01:39:25.417] [R2|T18|[CAND]] [ELECTION] Starting election for term 18
+[01:39:25.720] [R2|T18|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:25.720] [R2|T18|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:25.720] [R2|T18|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:25.721] [R2|T18|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:26.000] [R2|T18|[FOLLOWER]] [ELECTION] Election timeout (581ms) - starting election
+[01:39:26.007] [R2|T19|[CAND]] [ELECTION] Starting election for term 19
+[01:39:26.311] [R2|T19|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:26.311] [R2|T19|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:26.311] [R2|T19|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:26.312] [R2|T19|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:26.734] [R2|T19|[FOLLOWER]] [ELECTION] Election timeout (726ms) - starting election
+[01:39:26.745] [R2|T20|[CAND]] [ELECTION] Starting election for term 20
+[01:39:27.048] [R2|T20|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:27.049] [R2|T20|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:27.049] [R2|T20|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:27.049] [R2|T20|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:27.445] [R2|T20|[FOLLOWER]] [ELECTION] Election timeout (699ms) - starting election
+[01:39:27.453] [R2|T21|[CAND]] [ELECTION] Starting election for term 21
+[01:39:27.756] [R2|T21|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:27.756] [R2|T21|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:27.756] [R2|T21|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:27.756] [R2|T21|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:28.039] [R2|T21|[FOLLOWER]] [ELECTION] Election timeout (585ms) - starting election
+[01:39:28.045] [R2|T22|[CAND]] [ELECTION] Starting election for term 22
+[01:39:28.348] [R2|T22|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:28.348] [R2|T22|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:28.348] [R2|T22|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:28.349] [R2|T22|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:28.812] [R2|T22|[FOLLOWER]] [ELECTION] Election timeout (766ms) - starting election
+[01:39:28.827] [R2|T23|[CAND]] [ELECTION] Starting election for term 23
+[01:39:29.130] [R2|T23|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:29.130] [R2|T23|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:29.130] [R2|T23|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:29.130] [R2|T23|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:29.420] [R2|T23|[FOLLOWER]] [ELECTION] Election timeout (593ms) - starting election
+[01:39:29.428] [R2|T24|[CAND]] [ELECTION] Starting election for term 24
+[01:39:29.730] [R2|T24|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:29.730] [R2|T24|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:29.730] [R2|T24|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:29.730] [R2|T24|[CAND]] [ELECTION] Election lost or split vote - will retry
+[01:39:30.103] [R2|T24|[FOLLOWER]] [ELECTION] Election timeout (674ms) - starting election
+[01:39:30.110] [R2|T25|[CAND]] [ELECTION] Starting election for term 25
+[01:39:30.414] [R2|T25|[CAND]] [ELECTION] Peer http://replica1:5001 unreachable
+[01:39:30.415] [R2|T25|[CAND]] [ELECTION] Peer http://replica3:5003 unreachable
+[01:39:30.415] [R2|T25|[CAND]] [ELECTION] Votes received: 1/3
+[01:39:30.415] [R2|T25|[CAND]] [ELECTION] Election lost or split vote - will retry
+
+up to date, audited 77 packages in 3s
+
+24 packages are looking for funding
+  run `npm fund` for details
+
+found 0 vulnerabilities
+[01:31:35.352] [R3|T0|[FOLLOWER]] [STARTUP] Replica 3 started on port 5003
+[01:31:35.354] [R3|T0|[FOLLOWER]] [STARTUP] Peers: http://replica1:5001, http://replica2:5002
+[01:31:35.354] [R3|T0|[FOLLOWER]] [STARTUP] Election timeout: 500-800ms, Heartbeat: 150ms
+[01:31:36.293] [R3|T0|[FOLLOWER]] [VOTE] Vote request from 2 for term 1
+[01:31:36.294] [R3|T0|[FOLLOWER]] [TERM] Stepping down: discovered higher term 1 (was 0)
+[01:31:36.304] [R3|T1|[FOLLOWER]] [VOTE] Voted for 2 in term 1
+[01:31:36.330] [R3|T1|[FOLLOWER]] [VOTE] Vote request from 1 for term 1
+[01:31:36.331] [R3|T1|[FOLLOWER]] [VOTE] Vote denied to 1
+
+up to date, audited 77 packages in 2s
+
+24 packages are looking for funding
+  run `npm fund` for details
+
+found 0 vulnerabilities
+[01:39:47.164] [R3|T1|[FOLLOWER]] [PERSIST] Loaded state (term=1, logLength=0, commitIndex=-1)
+[01:39:47.173] [R3|T1|[FOLLOWER]] [STARTUP] Replica 3 started on port 5003
+[01:39:47.173] [R3|T1|[FOLLOWER]] [STARTUP] Peers: http://replica1:5001, http://replica2:5002
+[01:39:47.173] [R3|T1|[FOLLOWER]] [STARTUP] Election timeout: 500-800ms, Heartbeat: 150ms
+[01:39:47.416] [R3|T1|[FOLLOWER]] [TERM] Stepping down: discovered higher term 42 (was 1)
