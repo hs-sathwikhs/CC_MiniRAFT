@@ -32,9 +32,9 @@ function getPeerUrls() {
 const PEERS = getPeerUrls();
 
 // -- RAFT Configuration --------------------------------------------------------
-const ELECTION_TIMEOUT_MIN = 500;
-const ELECTION_TIMEOUT_MAX = 800;
-const HEARTBEAT_INTERVAL = 150;
+const ELECTION_TIMEOUT_MIN = Number(process.env.ELECTION_TIMEOUT_MIN || 1500);
+const ELECTION_TIMEOUT_MAX = Number(process.env.ELECTION_TIMEOUT_MAX || 2500);
+const HEARTBEAT_INTERVAL = Number(process.env.HEARTBEAT_INTERVAL || 400);
 const MAJORITY = 2;
 
 // -- RAFT State ----------------------------------------------------------------

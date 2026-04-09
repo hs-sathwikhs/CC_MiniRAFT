@@ -14,6 +14,7 @@ const axios = require("axios");
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
+app.use(express.static("public"));
 
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
@@ -22,11 +23,27 @@ const wss = new WebSocket.Server({ server });
 const PORT = Number(process.env.PORT || 8080);
 
 // Replica URLs (can be comma-separated env var or default to localhost)
-const REPLICA_URLS = (process.env.REPLICA_URLS || 
+const REPLICA_URLS = (process.env.REPLICA_URLS ||
     "http://localhost:5001,http://localhost:5002,http://localhost:5003")
     .split(",")
     .map((url) => url.trim())
     .filter(Boolean);
+
+// Timeout configurations (in milliseconds)
+const TIMEOUTS = {
+    REPLICA_STATUS_CHECK: Number(process.env.TIMEOUT_REPLICA_STATUS || 500),
+    STROKE_FORWARD: Number(process.env.TIMEOUT_STROKE_FORWARD || 10000),
+    CLEAR_FORWARD: Number(process.env.TIMEOUT_CLEAR_FORWARD || 10000),
+    COMMIT_POLLING: Number(process.env.TIMEOUT_COMMIT_POLLING || 5000),
+    LEADER_CACHE_TTL: Number(process.env.LEADER_CACHE_TTL || 1000),
+};
+
+// Rate limiting config
+const RATE_LIMIT_CONFIG = {
+    MAX_REQUESTS_PER_SECOND: Number(process.env.MAX_REQUESTS_PER_SECOND || 1000),
+    MAX_VIOLATIONS: Number(process.env.MAX_VIOLATIONS || 100),
+    VIOLATION_RESET_TIME: Number(process.env.VIOLATION_RESET_TIME || 60000),
+};
 
 // ── State ──────────────────────────────────────────────────────────────────
 let knownLeaderUrl = null;           // Cached leader URL
@@ -56,9 +73,9 @@ const MAX_STROKE_HISTORY = 1000;     // Cap stroke history to prevent unbounded 
 
 // Rate limiting
 const rateLimits = new Map();        // clientId -> { count, resetTime, violations }
-const MAX_REQUESTS_PER_SECOND = 100; // Max strokes per client per second
-const MAX_VIOLATIONS = 5;            // Max violations before blocking
-const VIOLATION_RESET_TIME = 60000;  // Reset violation count after 1 minute
+const MAX_REQUESTS_PER_SECOND = RATE_LIMIT_CONFIG.MAX_REQUESTS_PER_SECOND;
+const MAX_VIOLATIONS = RATE_LIMIT_CONFIG.MAX_VIOLATIONS;
+const VIOLATION_RESET_TIME = RATE_LIMIT_CONFIG.VIOLATION_RESET_TIME;
 const RATE_LIMIT_CLEANUP_INTERVAL = 60000; // Sweep expired rate-limit state once per minute
 
 /**
@@ -74,13 +91,8 @@ function evictExpiredRateLimits(now = Date.now()) {
 
         const requestWindowExpired =
             typeof state.resetTime !== "number" || state.resetTime <= now;
-        const hasActiveViolations = Number(state.violations || 0) > 0;
-        const violationWindowExpired =
-            !hasActiveViolations ||
-            typeof state.violationResetTime !== "number" ||
-            state.violationResetTime <= now;
 
-        if (requestWindowExpired && violationWindowExpired) {
+        if (requestWindowExpired) {
             rateLimits.delete(clientId);
         }
     }
@@ -168,40 +180,25 @@ function validateClear(data) {
  */
 function isRateLimited(clientId) {
     const now = Date.now();
-    const limit = rateLimits.get(clientId) || { 
-        count: 0, 
-        resetTime: now + 1000,
-        violations: 0,
-        violationResetTime: now + VIOLATION_RESET_TIME
+    const limit = rateLimits.get(clientId) || {
+        count: 0,
+        resetTime: now + 1000
     };
-    
-    // Reset violation count if time elapsed
-    if (now > limit.violationResetTime) {
-        limit.violations = 0;
-        limit.violationResetTime = now + VIOLATION_RESET_TIME;
-    }
-    
-    // Block if too many violations
-    if (limit.violations >= MAX_VIOLATIONS) {
-        return true;
-    }
-    
+
     // Reset count if time window elapsed
     if (now > limit.resetTime) {
         limit.count = 0;
         limit.resetTime = now + 1000;
     }
-    
+
     limit.count++;
     rateLimits.set(clientId, limit);
-    
+
     // Check if over limit
     if (limit.count > MAX_REQUESTS_PER_SECOND) {
-        limit.violations++;
-        rateLimits.set(clientId, limit);
         return true;
     }
-    
+
     return false;
 }
 
@@ -274,8 +271,8 @@ function safeSend(ws, data) {
  */
 async function fetchReplicaStatus(url) {
     try {
-        const response = await axios.get(`${url}/health`, { 
-            timeout: 500,  // 500ms timeout
+        const response = await axios.get(`${url}/health`, {
+            timeout: TIMEOUTS.REPLICA_STATUS_CHECK,
             validateStatus: () => true  // Don't throw on non-200
         });
         
@@ -429,7 +426,7 @@ async function forwardStrokeToLeader(strokeData, maxRetries = 3) {
             const response = await axios.post(
                 `${leaderUrl}/stroke`,
                 { stroke: strokeData.stroke },  // Replica expects { stroke: {...} }
-                { timeout: 1000 }
+                { timeout: TIMEOUTS.STROKE_FORWARD }
             );
             
             if (response.status === 200) {
@@ -514,7 +511,7 @@ async function forwardClearToLeader(clearData = {}, maxRetries = 3) {
             const response = await axios.post(
                 `${leaderUrl}/clear`,
                 { clientId: clearData.clientId || "unknown" },
-                { timeout: 1000 }
+                { timeout: TIMEOUTS.CLEAR_FORWARD }
             );
             
             if (response.status === 200) {
@@ -607,7 +604,7 @@ async function pollCommittedEntries() {
         // Use 'from' query parameter (matches replica API)
         const response = await axios.get(
             `${leaderUrl}/committed?from=${lastCommitIndex + 1}`,
-            { timeout: 500 }
+            { timeout: TIMEOUTS.COMMIT_POLLING }
         );
         
         // Validate response structure
@@ -751,7 +748,7 @@ async function checkLeaderHealth() {
     try {
         const response = await axios.get(
             `${knownLeaderUrl}/health`,
-            { timeout: 1000 }
+            { timeout: TIMEOUTS.REPLICA_STATUS_CHECK }
         );
         
         // Verify this replica is still the leader
@@ -1101,6 +1098,39 @@ app.get("/discover-leader", async (req, res) => {
             error: error.message
         });
     }
+});
+
+// Dashboard - Serve real-time metrics UI
+app.get("/dashboard", (req, res) => {
+    res.sendFile(__dirname + "/public/dashboard.html");
+});
+
+// Dashboard API - Return metrics in JSON format
+app.get("/api/metrics", async (req, res) => {
+    // Fetch replica statuses for cluster info
+    const replicaStatuses = await Promise.all(
+        REPLICA_URLS.map(url => fetchReplicaStatus(url))
+    );
+
+    res.json({
+        connectedClients: connectedClients.size,
+        totalMessagesReceived: messageCount,
+        totalBroadcasts: broadcastCount,
+        strokesForwarded: strokesForwarded,
+        strokesFailed: strokesFailed,
+        clearsForwarded: clearsForwarded,
+        clearsFailed: clearsFailed,
+        committedStrokesSeen: committedStrokeIds.size,
+        lastCommitIndex: lastCommitIndex,
+        strokeHistorySize: strokeHistory.length,
+        healthMonitoringActive: !!healthCheckInterval,
+        leaderFailureCount: leaderFailureCount,
+        validationFailures: validationFailures,
+        rateLimitHits: rateLimitHits,
+        uptime: process.uptime(),
+        replicaStatuses: replicaStatuses,
+        timestamp: new Date().toISOString()
+    });
 });
 
 // Serve simple test page for Day 1

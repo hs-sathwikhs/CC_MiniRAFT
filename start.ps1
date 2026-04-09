@@ -2,7 +2,7 @@
 # =============================================================================
 # MiniRAFT Project - Quick Start Script (PowerShell)
 # =============================================================================
-# Starts all components: 3 replicas + gateway + frontend
+# Starts: 3 replicas (Docker optional) + gateway + frontend
 # Use: ./start.ps1
 # Stop: Press Ctrl+C
 # =============================================================================
@@ -34,12 +34,34 @@ try {
     exit 1
 }
 
+# Check if Docker is available
+$dockerAvailable = $false
+try {
+    $dockerVersion = docker --version 2>$null
+    if ($dockerVersion) {
+        $dockerAvailable = $true
+        Write-Host "✓ Docker detected: $dockerVersion" -ForegroundColor Green
+    }
+} catch {
+    $dockerAvailable = $false
+}
+
+# Determine execution mode
+$useDocker = $false
+if ($dockerAvailable) {
+    Write-Host ""
+    Write-Host "Choose execution mode:" -ForegroundColor Cyan
+    Write-Host "  1) Docker (replicas in containers)" -ForegroundColor White
+    Write-Host "  2) Local (all services locally)" -ForegroundColor White
+    $choice = Read-Host "Enter choice (1 or 2, default: 1)"
+    $useDocker = ($choice -eq "1" -or $choice -eq "")
+}
+
 Write-Host ""
 
-# Function to check and install dependencies
+# Function to install dependencies
 function Install-DependenciesIfNeeded {
     param($Path, $Name)
-    
     if (Test-Path "$Path/node_modules") {
         Write-Host "✓ $Name dependencies already installed" -ForegroundColor Green
     } else {
@@ -51,50 +73,75 @@ function Install-DependenciesIfNeeded {
     }
 }
 
-# Install dependencies for all components
-Write-Host "Checking dependencies..." -ForegroundColor Cyan
-Install-DependenciesIfNeeded -Path "replica1" -Name "Replica 1"
-Install-DependenciesIfNeeded -Path "replica2" -Name "Replica 2"
-Install-DependenciesIfNeeded -Path "replica3" -Name "Replica 3"
-Install-DependenciesIfNeeded -Path "gateway" -Name "Gateway"
-
-Write-Host ""
-Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
-Write-Host "  Starting All Services..." -ForegroundColor Cyan
-Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
-Write-Host ""
-
 # Create logs directory
 if (-not (Test-Path "logs")) {
     New-Item -ItemType Directory -Path "logs" | Out-Null
 }
 
-# Start replicas
-Write-Host "🔷 Starting Replica 1 (port 5001)..." -ForegroundColor Blue
-$replica1 = Start-Process -FilePath "npm" -ArgumentList "start" -WorkingDirectory "replica1" -PassThru -WindowStyle Hidden -RedirectStandardOutput "logs/replica1.log" -RedirectStandardError "logs/replica1-error.log"
-Start-Sleep -Seconds 2
+Write-Host ""
+Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
+Write-Host "  Starting Services (Mode: $(if ($useDocker) { 'DOCKER' } else { 'LOCAL' }))" -ForegroundColor Cyan
+Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
+Write-Host ""
 
-Write-Host "🔷 Starting Replica 2 (port 5002)..." -ForegroundColor Blue
-$replica2 = Start-Process -FilePath "npm" -ArgumentList "start" -WorkingDirectory "replica2" -PassThru -WindowStyle Hidden -RedirectStandardOutput "logs/replica2.log" -RedirectStandardError "logs/replica2-error.log"
-Start-Sleep -Seconds 2
+# Initialize process handles
+$replica1 = $null
+$replica2 = $null
+$replica3 = $null
+$gateway = $null
+$frontend = $null
+$dockerProcess = $null
 
-Write-Host "🔷 Starting Replica 3 (port 5003)..." -ForegroundColor Blue
-$replica3 = Start-Process -FilePath "npm" -ArgumentList "start" -WorkingDirectory "replica3" -PassThru -WindowStyle Hidden -RedirectStandardOutput "logs/replica3.log" -RedirectStandardError "logs/replica3-error.log"
-Start-Sleep -Seconds 3
+if ($useDocker) {
+    Write-Host "🐳 Starting Docker containers..." -ForegroundColor Cyan
+    try {
+        # Start docker-compose
+        $dockerProcess = Start-Process -FilePath "docker-compose" -ArgumentList "up" -WindowStyle Hidden -RedirectStandardOutput "logs/docker.log" -RedirectStandardError "logs/docker-error.log" -PassThru
+        Write-Host "✓ Docker containers started" -ForegroundColor Green
+        Start-Sleep -Seconds 3
+    } catch {
+        Write-Host "✗ Failed to start Docker containers: $_" -ForegroundColor Red
+        exit 1
+    }
+} else {
+    Write-Host "Checking dependencies..." -ForegroundColor Cyan
+    Install-DependenciesIfNeeded -Path "replica1" -Name "Replica 1"
+    Install-DependenciesIfNeeded -Path "replica2" -Name "Replica 2"
+    Install-DependenciesIfNeeded -Path "replica3" -Name "Replica 3"
+    Install-DependenciesIfNeeded -Path "gateway" -Name "Gateway"
 
+    Write-Host ""
+
+    # Start replicas locally
+    Write-Host "🔷 Starting Replica 1 (port 5001)..." -ForegroundColor Blue
+    $replica1 = Start-Process -FilePath "cmd.exe" -ArgumentList "/c npm start" -WorkingDirectory "replica1" -PassThru -WindowStyle Hidden -RedirectStandardOutput "logs/replica1.log" -RedirectStandardError "logs/replica1-error.log"
+    Start-Sleep -Seconds 2
+
+    Write-Host "🔷 Starting Replica 2 (port 5002)..." -ForegroundColor Blue
+    $replica2 = Start-Process -FilePath "cmd.exe" -ArgumentList "/c npm start" -WorkingDirectory "replica2" -PassThru -WindowStyle Hidden -RedirectStandardOutput "logs/replica2.log" -RedirectStandardError "logs/replica2-error.log"
+    Start-Sleep -Seconds 2
+
+    Write-Host "🔷 Starting Replica 3 (port 5003)..." -ForegroundColor Blue
+    $replica3 = Start-Process -FilePath "cmd.exe" -ArgumentList "/c npm start" -WorkingDirectory "replica3" -PassThru -WindowStyle Hidden -RedirectStandardOutput "logs/replica3.log" -RedirectStandardError "logs/replica3-error.log"
+    Start-Sleep -Seconds 3
+}
+
+# Always start gateway locally
 Write-Host "🌐 Starting Gateway (port 8080)..." -ForegroundColor Magenta
-$gateway = Start-Process -FilePath "npm" -ArgumentList "start" -WorkingDirectory "gateway" -PassThru -WindowStyle Hidden -RedirectStandardOutput "logs/gateway.log" -RedirectStandardError "logs/gateway-error.log"
+$gateway = Start-Process -FilePath "cmd.exe" -ArgumentList "/c npm start" -WorkingDirectory "gateway" -PassThru -WindowStyle Hidden -RedirectStandardOutput "logs/gateway.log" -RedirectStandardError "logs/gateway-error.log"
 Start-Sleep -Seconds 3
 
 # Start frontend with simple HTTP server
 Write-Host "🎨 Starting Frontend (port 3000)..." -ForegroundColor Yellow
-
-# Check if http-server is installed globally
 try {
-    npx http-server --version | Out-Null
-    $frontend = Start-Process -FilePath "npx" -ArgumentList "http-server","frontend","-p","3000","-c-1","--silent" -PassThru -WindowStyle Hidden -RedirectStandardOutput "logs/frontend.log" -RedirectStandardError "logs/frontend-error.log"
+    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $frontendPath = Join-Path $scriptDir "frontend"
+
+    # Use cmd.exe to ensure PATH is properly resolved
+    $frontend = Start-Process -FilePath "cmd.exe" -ArgumentList "/c npx http-server '$frontendPath' -p 3000 -c-1" -PassThru -RedirectStandardOutput "logs/frontend.log" -RedirectStandardError "logs/frontend-error.log"
+    Write-Host "✓ Frontend started (PID: $($frontend.Id))" -ForegroundColor Green
 } catch {
-    Write-Host "  ⚠ http-server not available, frontend must be opened directly" -ForegroundColor Yellow
+    Write-Host "  ✗ Failed to start frontend: $_" -ForegroundColor Red
     $frontend = $null
 }
 
@@ -108,56 +155,45 @@ Write-Host "  Replica 1:  http://localhost:5001/health" -ForegroundColor White
 Write-Host "  Replica 2:  http://localhost:5002/health" -ForegroundColor White
 Write-Host "  Replica 3:  http://localhost:5003/health" -ForegroundColor White
 Write-Host "  Gateway:    http://localhost:8080/health" -ForegroundColor White
+Write-Host "  Dashboard:  http://localhost:8080/dashboard" -ForegroundColor White
 if ($frontend) {
     Write-Host "  Frontend:   http://localhost:3000" -ForegroundColor White
 } else {
     Write-Host "  Frontend:   Open frontend/index.html in browser" -ForegroundColor White
 }
 Write-Host ""
-Write-Host "Stats & Monitoring:" -ForegroundColor Cyan
-Write-Host "  Gateway Stats:        http://localhost:8080/stats" -ForegroundColor White
-Write-Host "  Leader Discovery:     http://localhost:8080/discover-leader" -ForegroundColor White
-Write-Host ""
-Write-Host "Logs:" -ForegroundColor Cyan
-Write-Host "  All logs are in the ./logs/ directory" -ForegroundColor White
-Write-Host ""
 Write-Host "To stop all services: Press Ctrl+C" -ForegroundColor Yellow
 Write-Host ""
 
-# Function to stop all processes
+# Function to stop all services
 function Stop-AllServices {
     Write-Host ""
     Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Yellow
     Write-Host "  Stopping All Services..." -ForegroundColor Yellow
     Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Yellow
     Write-Host ""
-    
+
+    if ($useDocker -and $dockerProcess -and !$dockerProcess.HasExited) {
+        Write-Host "⏹ Stopping Docker containers..." -ForegroundColor Yellow
+        & docker-compose down 2>$null
+    }
+
     if ($replica1 -and !$replica1.HasExited) {
-        Write-Host "⏹ Stopping Replica 1..." -ForegroundColor Yellow
         Stop-Process -Id $replica1.Id -Force -ErrorAction SilentlyContinue
     }
-    
     if ($replica2 -and !$replica2.HasExited) {
-        Write-Host "⏹ Stopping Replica 2..." -ForegroundColor Yellow
         Stop-Process -Id $replica2.Id -Force -ErrorAction SilentlyContinue
     }
-    
     if ($replica3 -and !$replica3.HasExited) {
-        Write-Host "⏹ Stopping Replica 3..." -ForegroundColor Yellow
         Stop-Process -Id $replica3.Id -Force -ErrorAction SilentlyContinue
     }
-    
     if ($gateway -and !$gateway.HasExited) {
-        Write-Host "⏹ Stopping Gateway..." -ForegroundColor Yellow
         Stop-Process -Id $gateway.Id -Force -ErrorAction SilentlyContinue
     }
-    
     if ($frontend -and !$frontend.HasExited) {
-        Write-Host "⏹ Stopping Frontend..." -ForegroundColor Yellow
         Stop-Process -Id $frontend.Id -Force -ErrorAction SilentlyContinue
     }
-    
-    Write-Host ""
+
     Write-Host "✓ All services stopped" -ForegroundColor Green
     Write-Host ""
 }
@@ -165,39 +201,37 @@ function Stop-AllServices {
 # Register cleanup on Ctrl+C
 Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
     Stop-AllServices
-}
+} | Out-Null
 
-# Keep script running and monitor processes
+# Monitor services
 try {
     Write-Host "Monitoring services (Ctrl+C to stop)..." -ForegroundColor Gray
     Write-Host ""
-    
+
     while ($true) {
-        # Check if any process has exited
-        $anyExited = $false
-        
-        if ($replica1.HasExited) {
-            Write-Host "✗ Replica 1 has stopped unexpectedly!" -ForegroundColor Red
-            $anyExited = $true
+        if (-not $useDocker) {
+            $anyExited = $false
+            if ($replica1 -and $replica1.HasExited) {
+                Write-Host "✗ Replica 1 crashed" -ForegroundColor Red
+                $anyExited = $true
+            }
+            if ($replica2 -and $replica2.HasExited) {
+                Write-Host "✗ Replica 2 crashed" -ForegroundColor Red
+                $anyExited = $true
+            }
+            if ($replica3 -and $replica3.HasExited) {
+                Write-Host "✗ Replica 3 crashed" -ForegroundColor Red
+                $anyExited = $true
+            }
+            if ($gateway -and $gateway.HasExited) {
+                Write-Host "✗ Gateway crashed" -ForegroundColor Red
+                $anyExited = $true
+            }
+            if ($anyExited) {
+                break
+            }
         }
-        if ($replica2.HasExited) {
-            Write-Host "✗ Replica 2 has stopped unexpectedly!" -ForegroundColor Red
-            $anyExited = $true
-        }
-        if ($replica3.HasExited) {
-            Write-Host "✗ Replica 3 has stopped unexpectedly!" -ForegroundColor Red
-            $anyExited = $true
-        }
-        if ($gateway.HasExited) {
-            Write-Host "✗ Gateway has stopped unexpectedly!" -ForegroundColor Red
-            $anyExited = $true
-        }
-        
-        if ($anyExited) {
-            Write-Host "Check logs in ./logs/ directory for errors" -ForegroundColor Yellow
-            break
-        }
-        
+
         Start-Sleep -Seconds 5
     }
 } finally {
