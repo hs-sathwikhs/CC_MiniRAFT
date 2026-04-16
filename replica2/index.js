@@ -107,52 +107,8 @@ function normalizePersistedLog(logEntries) {
     return normalized;
 }
 
-function loadStateFromDisk() {
-    try {
-        if (!fs.existsSync(RAFT_STATE_FILE)) {
-            return;
-        }
-
-        const raw = fs.readFileSync(RAFT_STATE_FILE, "utf8");
-        const parsed = JSON.parse(raw);
-
-        state.currentTerm = Number.isInteger(parsed.currentTerm) && parsed.currentTerm >= 0 ? parsed.currentTerm : 0;
-        state.votedFor = typeof parsed.votedFor === "string" || parsed.votedFor === null ? parsed.votedFor : null;
-        state.log = normalizePersistedLog(parsed.log);
-
-        const persistedCommitIndex = Number.isInteger(parsed.commitIndex) ? parsed.commitIndex : -1;
-        state.commitIndex = Math.min(Math.max(persistedCommitIndex, -1), state.log.length - 1);
-        state.lastApplied = Number.isInteger(parsed.lastApplied)
-            ? Math.min(Math.max(parsed.lastApplied, -1), state.commitIndex)
-            : state.commitIndex;
-
-        for (let i = 0; i <= state.commitIndex; i++) {
-            if (state.log[i]) {
-                state.log[i].committed = true;
-            }
-        }
-
-        log("PERSIST", `Loaded state (term=${state.currentTerm}, logLength=${state.log.length}, commitIndex=${state.commitIndex})`);
-    } catch (err) {
-        log("PERSIST", `Failed to load state: ${err.message}`);
-    }
-}
-
-function persistState() {
-    try {
-        const snapshot = {
-            currentTerm: state.currentTerm,
-            votedFor: state.votedFor,
-            log: state.log,
-            commitIndex: state.commitIndex,
-            lastApplied: state.lastApplied,
-        };
-
-        fs.writeFileSync(RAFT_STATE_FILE, JSON.stringify(snapshot, null, 2), "utf8");
-    } catch (err) {
-        log("PERSIST", `Failed to save state: ${err.message}`);
-    }
-}
+function loadStateFromDisk() {}
+function persistState() {}
 
 
 // -- Step Down ----------------------------------------------------------------
@@ -362,6 +318,18 @@ async function replicateLogEntry(entryPayload, entryLabel) {
         state.lastApplied = Math.max(state.lastApplied, state.commitIndex);
         persistState();
         log("COMMIT", `${entryLabel} COMMITTED at index ${newEntry.index}`);
+        
+        if (newEntry.stroke) {
+            try {
+                const gatewayUrl = process.env.DOCKER_ENV ? 'http://gateway:8080' : 'http://localhost:8080';
+                axios.post(`${gatewayUrl}/broadcast`, {
+                    stroke: newEntry.stroke,
+                    term: newEntry.term,
+                    index: newEntry.index
+                }).catch(err => log("GATEWAY", `Failed to push to gateway: ${err.message}`));
+            } catch(e) {}
+        }
+
         return { success: true, entry: newEntry };
     } else {
         log("COMMIT", `Not enough acks - entry NOT committed`);
@@ -403,14 +371,12 @@ async function syncFollower(peer, fromIndex) {
         const prevLogTerm = prevLogIndex >= 0 ? state.log[prevLogIndex].term : 0;
 
         const response = await axios.post(
-            `${peer}/append-entries`,
+            `${peer}/sync-log`,
             {
                 term: state.currentTerm,
                 leaderId: REPLICA_ID,
                 entries: entriesToSend,
-                prevLogIndex,
-                prevLogTerm,
-                leaderCommit: state.commitIndex,
+                commitIndex: state.commitIndex
             },
             { timeout: 1000 }
         );
@@ -632,15 +598,39 @@ app.post("/heartbeat", (req, res) => {
 });
 
 app.post("/sync-log", (req, res) => {
-    const { fromIndex } = req.body;
-
-    if (state.role !== "leader") {
-        return res.json({ success: false, reason: "not leader", leaderId: state.leaderId });
+    const { term, leaderId, entries, commitIndex } = req.body;
+    
+    if (term < state.currentTerm) {
+        return res.json({ success: false, term: state.currentTerm });
     }
-
-    const entries = state.log.slice(fromIndex || 0);
-    log("SYNC", `Sync request: sending ${entries.length} entries from index ${fromIndex || 0}`);
-    return res.json({ success: true, entries, commitIndex: state.commitIndex, term: state.currentTerm });
+    
+    if (term > state.currentTerm) {
+        stepDown(term);
+    }
+    state.role = "follower";
+    state.leaderId = leaderId;
+    resetElectionTimer();
+    
+    if (Array.isArray(entries) && entries.length > 0) {
+        for (const entry of entries) {
+            if (entry.index < state.log.length) {
+                state.log[entry.index] = entry;
+            } else {
+                state.log.push(entry);
+            }
+        }
+    }
+    
+    if (commitIndex > state.commitIndex) {
+        state.commitIndex = Math.min(commitIndex, state.log.length - 1);
+        for (let i = 0; i <= state.commitIndex; i++) {
+            if (state.log[i]) state.log[i].committed = true;
+        }
+    }
+    
+    persistState();
+    log("SYNC", `Catch-up sync completed. Log size: ${state.log.length}`);
+    return res.json({ success: true, term: state.currentTerm });
 });
 
 app.get("/sync-log", (req, res) => {

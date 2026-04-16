@@ -1,6 +1,21 @@
 version: '3.8'
 
 services:
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    environment:
+      - PORT=8080
+      - DOCKER_ENV=1
+      - REPLICA_URLS=http://replica1:5001,http://replica2:5002,http://replica3:5003
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./gateway:/app
+    networks:
+      - raft-network
+
   replica1:
     build:
       context: ./replica1
@@ -11,6 +26,8 @@ services:
       - DOCKER_ENV=1
     ports:
       - "5001:5001"
+    volumes:
+      - ./replica1:/app
     networks:
       - raft-network
     deploy:
@@ -30,6 +47,8 @@ services:
       - DOCKER_ENV=1
     ports:
       - "5002:5002"
+    volumes:
+      - ./replica2:/app
     networks:
       - raft-network
     deploy:
@@ -49,6 +68,8 @@ services:
       - DOCKER_ENV=1
     ports:
       - "5003:5003"
+    volumes:
+      - ./replica3:/app
     networks:
       - raft-network
     deploy:

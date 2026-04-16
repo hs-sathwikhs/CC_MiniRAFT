@@ -463,10 +463,6 @@
             const container = document.getElementById('alerts');
             const alerts = [];
 
-            if (!data.healthMonitoringActive) {
-                alerts.push({ type: 'warning', text: 'Health monitoring is inactive' });
-            }
-
             if (data.leaderFailureCount > 0) {
                 alerts.push({ type: 'error', text: `Leader health check failures: ${data.leaderFailureCount}` });
             }
