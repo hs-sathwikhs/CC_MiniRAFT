@@ -1,0 +1,9 @@
+{
+  "name": "miniraft-replica",
+  "private": true,
+  "dependencies": {
+    "express": "^4.21.0",
+    "axios": "^1.7.0",
+    "cors": "^2.8.5"
+  }
+}

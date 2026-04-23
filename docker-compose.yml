@@ -1,0 +1,109 @@
+networks:
+  raft-net:
+    driver: bridge
+
+services:
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    networks:
+      - raft-net
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+  gateway:
+    build: ./gateway
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./gateway:/app
+      - /app/node_modules
+    environment:
+      - REPLICA_URLS=http://replica1:4001,http://replica2:4002,http://replica3:4003
+      - GATEWAY_PORT=3000
+    networks:
+      - raft-net
+    depends_on:
+      replica1:
+        condition: service_healthy
+      replica2:
+        condition: service_healthy
+      replica3:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "const h=require('http');h.get('http://localhost:3000/status',r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  replica1:
+    build: ./replica
+    ports:
+      - "4001:4001"
+    volumes:
+      - ./replica1:/app
+      - /app/node_modules
+    environment:
+      - REPLICA_ID=replica1
+      - PORT=4001
+      - PEERS=http://replica2:4002,http://replica3:4003
+      - GATEWAY_URL=http://gateway:3000
+    networks:
+      - raft-net
+    healthcheck:
+      test: ["CMD", "node", "-e", "const h=require('http');h.get('http://localhost:4001/status',r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  replica2:
+    build: ./replica
+    ports:
+      - "4002:4002"
+    volumes:
+      - ./replica2:/app
+      - /app/node_modules
+    environment:
+      - REPLICA_ID=replica2
+      - PORT=4002
+      - PEERS=http://replica1:4001,http://replica3:4003
+      - GATEWAY_URL=http://gateway:3000
+    networks:
+      - raft-net
+    healthcheck:
+      test: ["CMD", "node", "-e", "const h=require('http');h.get('http://localhost:4002/status',r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  replica3:
+    build: ./replica
+    ports:
+      - "4003:4003"
+    volumes:
+      - ./replica3:/app
+      - /app/node_modules
+    environment:
+      - REPLICA_ID=replica3
+      - PORT=4003
+      - PEERS=http://replica1:4001,http://replica2:4002
+      - GATEWAY_URL=http://gateway:3000
+    networks:
+      - raft-net
+    healthcheck:
+      test: ["CMD", "node", "-e", "const h=require('http');h.get('http://localhost:4003/status',r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped

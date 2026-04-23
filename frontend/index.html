@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MiniRAFT Collaborative Whiteboard</title>
+  <meta name="description" content="Real-time collaborative drawing board powered by Mini-RAFT consensus">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #fafafa;
+      --surface: #ffffff;
+      --surface-hover: #f5f5f5;
+      --border: #e8e8e8;
+      --border-light: #f0f0f0;
+      --text: #1a1a1a;
+      --text-secondary: #888;
+      --text-muted: #bbb;
+      --accent: #1a1a1a;
+      --accent-soft: rgba(0,0,0,0.06);
+      --green: #22c55e;
+      --green-bg: rgba(34,197,94,0.08);
+      --red: #ef4444;
+      --red-bg: rgba(239,68,68,0.08);
+      --shadow-sm: 0 1px 3px rgba(0,0,0,0.04);
+      --shadow-md: 0 4px 16px rgba(0,0,0,0.06);
+      --shadow-lg: 0 8px 32px rgba(0,0,0,0.08);
+      --radius: 12px;
+      --radius-sm: 8px;
+      --transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Inter', -apple-system, system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Header ────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 28px;
+      height: 56px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      z-index: 10;
+    }
+    .logo-group { display: flex; align-items: center; gap: 12px; }
+    .logo-icon {
+      width: 32px; height: 32px;
+      background: var(--text);
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-weight: 700; font-size: 14px;
+      letter-spacing: -0.5px;
+    }
+    header h1 { font-size: 15px; font-weight: 600; letter-spacing: -0.3px; color: var(--text); }
+    header .subtitle { font-size: 11px; color: var(--text-secondary); font-weight: 400; margin-top: 1px; }
+
+    .header-right { display: flex; align-items: center; gap: 16px; }
+    .nav-link {
+      font-size: 12px; font-weight: 500; color: var(--text-secondary);
+      text-decoration: none; padding: 6px 12px; border-radius: 6px;
+      transition: all var(--transition);
+    }
+    .nav-link:hover { color: var(--text); background: var(--accent-soft); }
+
+    .conn-pill {
+      display: flex; align-items: center; gap: 6px;
+      padding: 5px 14px; border-radius: 100px;
+      font-size: 11px; font-weight: 500;
+      transition: all 0.4s ease;
+      border: 1px solid transparent;
+    }
+    .conn-pill.online { background: var(--green-bg); color: #16a34a; border-color: rgba(34,197,94,0.15); }
+    .conn-pill.offline { background: var(--red-bg); color: var(--red); border-color: rgba(239,68,68,0.15); }
+    .conn-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      position: relative;
+    }
+    .conn-pill.online .conn-dot { background: var(--green); }
+    .conn-pill.offline .conn-dot { background: var(--red); }
+    .conn-pill.online .conn-dot::after {
+      content: ''; position: absolute; inset: -3px;
+      border-radius: 50%; background: var(--green);
+      opacity: 0; animation: ping 2s cubic-bezier(0,0,0.2,1) infinite;
+    }
+    @keyframes ping { 0% { opacity: 0.6; transform: scale(1); } 100% { opacity: 0; transform: scale(2.5); } }
+
+    /* ── Main layout ──────────────── */
+    .main { display: flex; flex: 1; overflow: hidden; }
+
+    /* ── Sidebar ──────────────────── */
+    .sidebar {
+      width: 220px; flex-shrink: 0;
+      padding: 16px;
+      overflow-y: auto;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    .sidebar::-webkit-scrollbar { width: 0; }
+
+    .section-label {
+      font-size: 10px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 1.2px;
+      color: var(--text-muted); padding: 12px 8px 8px;
+    }
+
+    /* Tool buttons */
+    .tool-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 0 4px; }
+    .tool-btn {
+      padding: 10px 0; border: none; background: transparent;
+      border-radius: var(--radius-sm); font-size: 12px; font-weight: 500;
+      color: var(--text-secondary); cursor: pointer;
+      transition: all var(--transition);
+      font-family: inherit; display: flex; flex-direction: column;
+      align-items: center; gap: 4px;
+    }
+    .tool-btn svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; }
+    .tool-btn:hover { background: var(--accent-soft); color: var(--text); }
+    .tool-btn.active { background: var(--text); color: #fff; }
+
+    /* Color picker */
+    .color-section { padding: 4px 8px; }
+    .color-row { display: flex; align-items: center; gap: 8px; }
+    #color-picker {
+      width: 32px; height: 32px; border: 2px solid var(--border);
+      border-radius: 8px; cursor: pointer; padding: 2px;
+      background: transparent; transition: border-color var(--transition);
+    }
+    #color-picker:hover { border-color: var(--text-muted); }
+    #color-picker::-webkit-color-swatch-wrapper { padding: 0; }
+    #color-picker::-webkit-color-swatch { border: none; border-radius: 4px; }
+    .color-hex {
+      font-family: 'JetBrains Mono', monospace; font-size: 11px;
+      color: var(--text-muted); font-weight: 400;
+    }
+
+    /* Size slider */
+    .size-section { padding: 4px 8px; }
+    .size-row { display: flex; align-items: center; gap: 10px; }
+    #size-slider {
+      flex: 1; height: 4px; -webkit-appearance: none; appearance: none;
+      background: var(--border); border-radius: 2px; outline: none;
+      transition: background var(--transition);
+    }
+    #size-slider:hover { background: var(--text-muted); }
+    #size-slider::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 14px; height: 14px;
+      background: var(--text); border-radius: 50%; cursor: pointer;
+      transition: transform var(--transition);
+    }
+    #size-slider::-webkit-slider-thumb:hover { transform: scale(1.2); }
+    #size-val {
+      font-family: 'JetBrains Mono', monospace; font-size: 11px;
+      color: var(--text-muted); min-width: 28px; text-align: right;
+    }
+
+    /* Action buttons */
+    .action-list { padding: 0 4px; display: flex; flex-direction: column; gap: 2px; }
+    .act-btn {
+      padding: 8px 12px; border: none; background: transparent;
+      border-radius: var(--radius-sm); font-size: 12px; font-weight: 500;
+      color: var(--text-secondary); cursor: pointer; text-align: left;
+      transition: all var(--transition); font-family: inherit;
+    }
+    .act-btn:hover { background: var(--accent-soft); color: var(--text); }
+    .act-btn.danger { color: var(--red); }
+    .act-btn.danger:hover { background: var(--red-bg); }
+
+    .divider { height: 1px; background: var(--border-light); margin: 4px 8px; }
+
+    /* Session stats */
+    .stat-list { padding: 0 8px; }
+    .stat-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 6px 0; font-size: 11px;
+    }
+    .stat-label { color: var(--text-muted); font-weight: 500; }
+    .stat-value {
+      font-family: 'JetBrains Mono', monospace; font-weight: 500;
+      font-size: 11px; color: var(--text);
+    }
+    .client-chip {
+      display: flex; align-items: center; gap: 6px; margin-top: 8px;
+      padding: 6px 10px; background: var(--accent-soft);
+      border-radius: 6px; font-size: 10px; color: var(--text-secondary);
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .client-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+
+    /* ── Canvas area ─────────────── */
+    .canvas-wrap {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      padding: 24px; overflow: hidden; background: var(--bg);
+    }
+    .canvas-container {
+      border-radius: var(--radius);
+      background: #fff;
+      box-shadow: var(--shadow-lg);
+      overflow: hidden;
+      position: relative;
+      animation: canvasIn 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes canvasIn {
+      from { opacity: 0; transform: scale(0.97) translateY(8px); }
+      to { opacity: 1; transform: scale(1) translateY(0); }
+    }
+    canvas { display: block; cursor: crosshair; background: #fff; }
+
+    .canvas-footer {
+      text-align: center; margin-top: 16px;
+      font-size: 11px; color: var(--text-muted);
+      display: flex; align-items: center; gap: 16px; justify-content: center;
+      animation: fadeUp 0.8s ease 0.3s both;
+    }
+    @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    kbd {
+      display: inline-block; padding: 2px 6px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 4px; font-size: 10px; font-weight: 500;
+      font-family: 'JetBrains Mono', monospace; color: var(--text-secondary);
+    }
+    .shortcuts { display: flex; gap: 4px; align-items: center; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo-group">
+    <div class="logo-icon">R</div>
+    <div>
+      <h1>MiniRAFT</h1>
+      <div class="subtitle">Collaborative Whiteboard</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <a href="/dashboard" class="nav-link">Dashboard →</a>
+    <div id="conn-pill" class="conn-pill offline">
+      <span class="conn-dot"></span>
+      <span id="conn-text">Connecting</span>
+    </div>
+  </div>
+</header>
+
+<div class="main">
+  <aside class="sidebar">
+
+    <div class="section-label">Tools</div>
+    <div class="tool-grid">
+      <button id="btn-pen" class="tool-btn active" onclick="setTool('draw')">
+        <svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+        Pen
+      </button>
+      <button id="btn-eraser" class="tool-btn" onclick="setTool('erase')">
+        <svg viewBox="0 0 24 24"><path d="M20 20H7L3 16c-.8-.8-.8-2 0-2.8L14.8 1.4c.8-.8 2-.8 2.8 0l5 5c.8.8.8 2 0 2.8L11 20"/></svg>
+        Eraser
+      </button>
+    </div>
+
+    <div class="divider"></div>
+    <div class="section-label">Color</div>
+    <div class="color-section">
+      <div class="color-row">
+        <input type="color" id="color-picker" value="#1a1a1a">
+        <span class="color-hex" id="color-hex">#1a1a1a</span>
+      </div>
+    </div>
+
+    <div class="section-label">Size</div>
+    <div class="size-section">
+      <div class="size-row">
+        <input type="range" id="size-slider" min="1" max="20" value="3">
+        <span id="size-val">3</span>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+    <div class="section-label">Actions</div>
+    <div class="action-list">
+      <button class="act-btn" onclick="undo()">↩ Undo</button>
+      <button class="act-btn" onclick="clearLocal()">Clear Local</button>
+      <button class="act-btn danger" onclick="clearForEveryone()">Clear Everyone</button>
+      <button class="act-btn" onclick="exportPNG()">↓ Export PNG</button>
+    </div>
+
+    <div class="divider"></div>
+    <div class="section-label">Session</div>
+    <div class="stat-list">
+      <div class="stat-row"><span class="stat-label">Leader</span><span class="stat-value" id="st-leader">-</span></div>
+      <div class="stat-row"><span class="stat-label">Term</span><span class="stat-value" id="st-term">-</span></div>
+      <div class="stat-row"><span class="stat-label">Strokes</span><span class="stat-value" id="st-strokes">0</span></div>
+      <div class="stat-row"><span class="stat-label">Latency</span><span class="stat-value" id="st-latency">-</span></div>
+      <div class="stat-row"><span class="stat-label">Reconnects</span><span class="stat-value" id="st-reconnects">0</span></div>
+      <div class="client-chip">
+        <span class="dot"></span>
+        <span id="client-id">xxxxx</span>
+      </div>
+    </div>
+
+  </aside>
+
+  <div class="canvas-wrap">
+    <div class="canvas-container">
+      <canvas id="canvas" width="1100" height="680"></canvas>
+    </div>
+    <div class="canvas-footer">
+      <span>Draw with mouse or touch</span>
+      <span class="shortcuts"><kbd>P</kbd> pen <kbd>E</kbd> eraser <kbd>Ctrl+Z</kbd> undo</span>
+    </div>
+  </div>
+</div>
+
+<script>
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+
+  let drawing = false, lastX = 0, lastY = 0;
+  let color = '#1a1a1a', tool = 'draw', brushSize = 3;
+  let strokesSent = 0, reconnects = -1;
+  const myClientId = Math.random().toString(36).slice(2, 8);
+  const pendingStrokes = new Map();
+  let latencySamples = [], undoStack = [], strokeBatch = [], batchTimer = null;
+
+  document.getElementById('client-id').textContent = myClientId;
+
+  function setTool(t) {
+    tool = t;
+    document.getElementById('btn-pen').classList.toggle('active', t === 'draw');
+    document.getElementById('btn-eraser').classList.toggle('active', t === 'erase');
+    canvas.style.cursor = t === 'erase' ? 'cell' : 'crosshair';
+  }
+
+  document.getElementById('color-picker').addEventListener('input', function() {
+    color = this.value;
+    document.getElementById('color-hex').textContent = color;
+  });
+  document.getElementById('size-slider').addEventListener('input', function() {
+    brushSize = +this.value;
+    document.getElementById('size-val').textContent = brushSize;
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT') return;
+    if (e.key === 'p' || e.key === 'P') setTool('draw');
+    if (e.key === 'e' || e.key === 'E') setTool('erase');
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); }
+  });
+
+  function drawStroke(s) {
+    ctx.save();
+    ctx.globalCompositeOperation = s.tool === 'erase' ? 'destination-out' : 'source-over';
+    ctx.beginPath();
+    ctx.moveTo(s.x0, s.y0);
+    ctx.lineTo(s.x1, s.y1);
+    ctx.strokeStyle = s.tool === 'erase' ? '#000' : (s.color || '#000');
+    ctx.lineWidth = Math.max(1, Number(s.width || 1));
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function getPos(e) {
+    const r = canvas.getBoundingClientRect();
+    const t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
+    return t ? { x: t.clientX - r.left, y: t.clientY - r.top } : { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+
+  function saveUndo() { undoStack.push(ctx.getImageData(0, 0, canvas.width, canvas.height)); if (undoStack.length > 15) undoStack.shift(); }
+
+  function startDraw(e) { e.preventDefault(); saveUndo(); drawing = true; const p = getPos(e); lastX = p.x; lastY = p.y; }
+  function moveDraw(e) {
+    if (!drawing) return; e.preventDefault();
+    const p = getPos(e);
+    const stroke = { x0: lastX, y0: lastY, x1: p.x, y1: p.y, color, width: brushSize, tool, clientId: myClientId, strokeId: Math.random().toString(36).slice(2) };
+    drawStroke(stroke); queueStroke(stroke);
+    lastX = p.x; lastY = p.y;
+  }
+  function stopDraw() { drawing = false; }
+
+  canvas.addEventListener('mousedown', startDraw);
+  canvas.addEventListener('mousemove', moveDraw);
+  canvas.addEventListener('mouseup', stopDraw);
+  canvas.addEventListener('mouseleave', stopDraw);
+  canvas.addEventListener('touchstart', startDraw, { passive: false });
+  canvas.addEventListener('touchmove', moveDraw, { passive: false });
+  canvas.addEventListener('touchend', stopDraw, { passive: false });
+
+  function queueStroke(stroke) {
+    pendingStrokes.set(stroke.strokeId, Date.now());
+    strokeBatch.push(stroke);
+    if (!batchTimer) batchTimer = setTimeout(flushBatch, 16);
+    strokesSent++;
+    document.getElementById('st-strokes').textContent = strokesSent;
+  }
+  function flushBatch() {
+    batchTimer = null;
+    if (!strokeBatch.length) return;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'strokes', strokes: strokeBatch }));
+    strokeBatch = [];
+  }
+
+  function undo() { if (undoStack.length) ctx.putImageData(undoStack.pop(), 0, 0); }
+  function clearLocal() { ctx.clearRect(0, 0, canvas.width, canvas.height); undoStack = []; }
+  function clearForEveryone() { clearLocal(); pendingStrokes.clear(); if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'clear' })); }
+  function exportPNG() { const a = document.createElement('a'); a.download = 'miniraft-whiteboard.png'; a.href = canvas.toDataURL(); a.click(); }
+
+  // ── WebSocket ──────────────────────────────────────
+  let ws = null;
+  function connect() {
+    reconnects++;
+    document.getElementById('st-reconnects').textContent = Math.max(0, reconnects);
+    ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+
+    ws.onopen = () => setPill(true);
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      const apply = (s) => {
+        if (!s || s.x0 == null) return;
+        if (s.clientId !== myClientId) drawStroke(s);
+        if (s.clientId === myClientId && pendingStrokes.has(s.strokeId)) {
+          const rtt = Date.now() - pendingStrokes.get(s.strokeId);
+          pendingStrokes.delete(s.strokeId);
+          latencySamples.push(rtt); if (latencySamples.length > 20) latencySamples.shift();
+          document.getElementById('st-latency').textContent = Math.round(latencySamples.reduce((a,b)=>a+b,0)/latencySamples.length) + 'ms';
+        }
+      };
+      if (msg.type === 'stroke') apply(msg.stroke);
+      else if (msg.type === 'strokes') (msg.strokes||[]).forEach(apply);
+      else if (msg.type === 'full_log') { ctx.clearRect(0,0,canvas.width,canvas.height); undoStack=[]; (msg.log||[]).forEach(s => { if(s&&s.x0!=null) drawStroke(s); }); }
+      else if (msg.type === 'clear') { ctx.clearRect(0,0,canvas.width,canvas.height); undoStack=[]; pendingStrokes.clear(); }
+      else if (msg.type === 'leader_change' || msg.type === 'leader') {
+        document.getElementById('st-leader').textContent = msg.leader_id || '-';
+        document.getElementById('st-term').textContent = msg.term || '-';
+      }
+    };
+    ws.onclose = () => { setPill(false); setTimeout(connect, 2000); };
+    ws.onerror = () => {};
+  }
+  function setPill(on) {
+    const p = document.getElementById('conn-pill');
+    p.className = 'conn-pill ' + (on ? 'online' : 'offline');
+    document.getElementById('conn-text').textContent = on ? 'Connected' : 'Reconnecting';
+  }
+  connect();
+</script>
+</body>
+</html>

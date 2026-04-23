@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MiniRAFT Dashboard</title>
+  <meta name="description" content="Cluster monitoring dashboard for MiniRAFT consensus system">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #fafafa;
+      --surface: #ffffff;
+      --surface-raised: #ffffff;
+      --border: #eaeaea;
+      --border-light: #f2f2f2;
+      --text: #111;
+      --text-secondary: #666;
+      --text-muted: #999;
+      --text-faint: #ccc;
+      --green: #22c55e;
+      --green-soft: rgba(34,197,94,0.08);
+      --blue: #3b82f6;
+      --blue-soft: rgba(59,130,246,0.08);
+      --purple: #8b5cf6;
+      --purple-soft: rgba(139,92,246,0.08);
+      --red: #ef4444;
+      --red-soft: rgba(239,68,68,0.08);
+      --amber: #f59e0b;
+      --amber-soft: rgba(245,158,11,0.08);
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+      --shadow-md: 0 4px 12px rgba(0,0,0,0.05);
+      --shadow-lg: 0 8px 24px rgba(0,0,0,0.07);
+      --radius: 12px;
+      --radius-sm: 8px;
+      --transition: 0.2s cubic-bezier(0.4,0,0.2,1);
+    }
+
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body {
+      font-family:'Inter',-apple-system,system-ui,sans-serif;
+      background:var(--bg); color:var(--text);
+      min-height:100vh;
+      -webkit-font-smoothing:antialiased;
+    }
+
+    /* ── Header ────── */
+    .header {
+      background:var(--surface);
+      padding:0 32px; height:56px;
+      display:flex; align-items:center; justify-content:space-between;
+      border-bottom:1px solid var(--border);
+      position:sticky; top:0; z-index:10;
+    }
+    .header-left { display:flex; align-items:center; gap:12px; }
+    .logo-icon {
+      width:32px; height:32px; background:#111; border-radius:8px;
+      display:flex; align-items:center; justify-content:center;
+      color:#fff; font-weight:700; font-size:14px;
+    }
+    .header h1 { font-size:15px; font-weight:600; letter-spacing:-0.3px; }
+    .header .sub { font-size:11px; color:var(--text-muted); margin-top:1px; }
+    .header-right { display:flex; align-items:center; gap:12px; }
+    .back-link {
+      font-size:12px; font-weight:500; color:var(--text-secondary);
+      text-decoration:none; padding:6px 12px; border-radius:6px;
+      transition:all var(--transition);
+    }
+    .back-link:hover { color:var(--text); background:rgba(0,0,0,0.04); }
+    .refresh-btn {
+      padding:7px 16px; border:1px solid var(--border); border-radius:8px;
+      background:var(--surface); color:var(--text);
+      font-size:12px; font-weight:600; cursor:pointer;
+      transition:all var(--transition); font-family:inherit;
+    }
+    .refresh-btn:hover { border-color:#bbb; box-shadow:var(--shadow-sm); }
+    .auto-tag {
+      font-size:10px; color:var(--text-faint);
+      font-family:'JetBrains Mono',monospace;
+    }
+
+    .container { max-width:960px; margin:0 auto; padding:28px 32px; }
+
+    /* ── Stat cards ── */
+    .stat-grid {
+      display:grid; grid-template-columns:repeat(4,1fr);
+      gap:12px; margin-bottom:32px;
+    }
+    .stat-card {
+      background:var(--surface-raised); border-radius:var(--radius);
+      padding:20px; border:1px solid var(--border);
+      transition:all var(--transition);
+      animation:cardIn 0.4s cubic-bezier(0.16,1,0.3,1) both;
+    }
+    .stat-card:nth-child(1) { animation-delay:0s; }
+    .stat-card:nth-child(2) { animation-delay:0.05s; }
+    .stat-card:nth-child(3) { animation-delay:0.1s; }
+    .stat-card:nth-child(4) { animation-delay:0.15s; }
+    @keyframes cardIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+    .stat-card:hover { border-color:#ddd; box-shadow:var(--shadow-md); }
+    .stat-card .label {
+      font-size:10px; font-weight:600;
+      text-transform:uppercase; letter-spacing:1px;
+      color:var(--text-muted); margin-bottom:10px;
+    }
+    .stat-card .value { font-size:28px; font-weight:700; color:var(--text); line-height:1; letter-spacing:-1px; }
+    .stat-card .hint {
+      font-size:11px; color:var(--text-faint); margin-top:8px;
+      display:flex; align-items:center; gap:5px;
+    }
+    .hint-dot { width:5px; height:5px; border-radius:50%; flex-shrink:0; }
+    .hint-dot.green { background:var(--green); }
+    .hint-dot.amber { background:var(--amber); }
+    .hint-dot.red { background:var(--red); }
+
+    /* ── Section ──── */
+    .section { margin-bottom:28px; animation:cardIn 0.5s cubic-bezier(0.16,1,0.3,1) both; }
+    .section:nth-of-type(2) { animation-delay:0.1s; }
+    .section:nth-of-type(3) { animation-delay:0.15s; }
+    .section:nth-of-type(4) { animation-delay:0.2s; }
+    .section-title {
+      font-size:13px; font-weight:600;
+      margin-bottom:12px; color:var(--text);
+      display:flex; align-items:center; gap:8px;
+    }
+    .section-title::before {
+      content:''; width:3px; height:14px;
+      background:var(--text); border-radius:2px;
+    }
+
+    /* ── Cluster ──── */
+    .replica-list { display:flex; flex-direction:column; gap:6px; }
+    .replica-card {
+      background:var(--surface-raised); border-radius:var(--radius-sm);
+      padding:14px 18px;
+      display:flex; align-items:center; justify-content:space-between;
+      border:1px solid var(--border);
+      transition:all var(--transition);
+    }
+    .replica-card:hover { border-color:#ddd; box-shadow:var(--shadow-sm); }
+    .replica-left { display:flex; align-items:center; gap:10px; }
+    .replica-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+    .replica-dot.on { background:var(--green); }
+    .replica-dot.off { background:var(--red); }
+    .replica-name { font-weight:600; font-size:13px; }
+    .replica-url { font-size:10px; color:var(--text-faint); font-family:'JetBrains Mono',monospace; }
+    .replica-right { display:flex; align-items:center; gap:14px; }
+    .replica-meta {
+      text-align:right; font-size:10px; color:var(--text-muted);
+      line-height:1.6; font-family:'JetBrains Mono',monospace;
+    }
+    .role-badge {
+      padding:4px 10px; border-radius:6px;
+      font-size:10px; font-weight:600;
+      text-transform:uppercase; letter-spacing:0.5px;
+      font-family:inherit;
+    }
+    .role-badge.leader { background:#111; color:#fff; }
+    .role-badge.follower { background:var(--blue-soft); color:var(--blue); }
+    .role-badge.candidate { background:var(--amber-soft); color:var(--amber); }
+    .role-badge.unknown { background:var(--border); color:var(--text-muted); }
+
+    /* ── Metrics table */
+    .metrics-wrap {
+      background:var(--surface-raised); border-radius:var(--radius);
+      border:1px solid var(--border); overflow:hidden;
+    }
+    .metrics-wrap table { width:100%; border-collapse:collapse; }
+    .metrics-wrap th {
+      text-align:left; padding:10px 18px;
+      font-size:10px; font-weight:600;
+      text-transform:uppercase; letter-spacing:0.8px;
+      color:var(--text-muted); background:var(--bg);
+      border-bottom:1px solid var(--border);
+    }
+    .metrics-wrap td {
+      padding:9px 18px; font-size:12px;
+      border-bottom:1px solid var(--border-light);
+    }
+    .metrics-wrap tr:last-child td { border-bottom:none; }
+    .metrics-wrap td:first-child { font-weight:500; color:var(--text-secondary); }
+    .metrics-wrap td:last-child {
+      font-weight:600; color:var(--text); text-align:right;
+      font-family:'JetBrains Mono',monospace; font-size:12px;
+    }
+
+    /* ── Event log ── */
+    .log-panel {
+      background:var(--surface-raised); border-radius:var(--radius);
+      border:1px solid var(--border);
+      padding:14px 18px;
+      max-height:280px; overflow-y:auto;
+    }
+    .log-panel::-webkit-scrollbar { width:4px; }
+    .log-panel::-webkit-scrollbar-thumb { background:#ddd; border-radius:2px; }
+    .log-entry {
+      padding:4px 0; font-size:11px;
+      font-family:'JetBrains Mono',monospace;
+      color:var(--text-muted);
+      border-bottom:1px solid var(--border-light);
+      line-height:1.5;
+    }
+    .log-entry:last-child { border-bottom:none; }
+    .log-entry .time { color:var(--text-faint); margin-right:8px; }
+    .log-entry.election .msg { color:var(--amber); }
+    .log-entry.commit .msg { color:var(--green); }
+    .log-entry.error .msg { color:var(--red); }
+    .log-entry.warn .msg { color:var(--amber); }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <div class="logo-icon">R</div>
+    <div>
+      <h1>Dashboard</h1>
+      <div class="sub">Cluster Monitoring</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <a class="back-link" href="/">← Whiteboard</a>
+    <button class="refresh-btn" onclick="fetchData()">Refresh</button>
+    <span class="auto-tag" id="auto-tag">3s</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="stat-grid" id="stat-grid">
+    <div class="stat-card">
+      <div class="label">Clients</div>
+      <div class="value" id="s-clients">-</div>
+      <div class="hint"><span class="hint-dot green"></span>Active</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Forwarded</div>
+      <div class="value" id="s-forwarded">-</div>
+      <div class="hint" id="s-forwarded-hint">Idle</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Committed</div>
+      <div class="value" id="s-committed">-</div>
+      <div class="hint" id="s-committed-hint">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Failed</div>
+      <div class="value" id="s-failed">-</div>
+      <div class="hint" id="s-failed-hint"><span class="hint-dot green"></span>0%</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Cluster Status</div>
+    <div class="replica-list" id="replica-list">
+      <div class="replica-card"><span style="color:var(--text-faint)">Loading…</span></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Performance</div>
+    <div class="metrics-wrap">
+      <table>
+        <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>Total Messages</td><td id="m-messages">-</td></tr>
+          <tr><td>Total Broadcasts</td><td id="m-broadcasts">-</td></tr>
+          <tr><td>Strokes Forwarded</td><td id="m-forwarded">-</td></tr>
+          <tr><td>Failed Operations</td><td id="m-failed">-</td></tr>
+          <tr><td>Pending Queue</td><td id="m-pending">-</td></tr>
+          <tr><td>Current Leader</td><td id="m-leader">-</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Event Log</div>
+    <div class="log-panel" id="log-panel">
+      <div class="log-entry"><span class="time">-</span><span class="msg">Waiting for data…</span></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  let countdown = 3;
+
+  async function fetchData() {
+    try {
+      const d = await (await fetch('/api/dashboard-data')).json();
+      render(d);
+    } catch(e) { console.error('Fetch failed', e); }
+    countdown = 3;
+  }
+
+  function render(d) {
+    document.getElementById('s-clients').textContent = d.connectedClients ?? 0;
+    document.getElementById('s-forwarded').textContent = d.metrics?.strokesForwarded ?? 0;
+    document.getElementById('s-committed').textContent = d.metrics?.strokesCommitted ?? 0;
+    document.getElementById('s-failed').textContent = d.metrics?.failedOps ?? 0;
+
+    const fwd = d.metrics?.strokesForwarded || 0;
+    const fail = d.metrics?.failedOps || 0;
+    const pct = fwd + fail > 0 ? ((fail / (fwd + fail)) * 100).toFixed(1) : 0;
+    document.getElementById('s-failed-hint').innerHTML =
+      `<span class="hint-dot ${pct > 5 ? 'red' : 'green'}"></span>${pct}% failure`;
+    document.getElementById('s-forwarded-hint').textContent = fwd > 0 ? 'Active' : 'Idle';
+
+    let leaderName = '-';
+    if (d.currentLeader) leaderName = d.currentLeader.split('//')[1]?.split(':')[0] || d.currentLeader;
+
+    const list = document.getElementById('replica-list');
+    if (d.replicas?.length) {
+      list.innerHTML = d.replicas.map(r => {
+        const name = r.id || r.url?.split('//')[1]?.split(':')[0] || '?';
+        const on = r.online !== false;
+        const role = r.role || 'unknown';
+        return `<div class="replica-card">
+          <div class="replica-left">
+            <span class="replica-dot ${on?'on':'off'}"></span>
+            <div>
+              <div class="replica-name">${name}</div>
+              <div class="replica-url">${r.url||''}</div>
+            </div>
+          </div>
+          <div class="replica-right">
+            <div class="replica-meta">
+              term ${r.term??'-'} · entries ${r.log_length??'-'} · commit ${r.commit_index??'-'}
+            </div>
+            <span class="role-badge ${role}">${role}</span>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    document.getElementById('m-messages').textContent = d.metrics?.totalMessages ?? '-';
+    document.getElementById('m-broadcasts').textContent = d.metrics?.totalBroadcasts ?? '-';
+    document.getElementById('m-forwarded').textContent = d.metrics?.strokesForwarded ?? '-';
+    document.getElementById('m-failed').textContent = d.metrics?.failedOps ?? '-';
+    document.getElementById('m-pending').textContent = d.pendingStrokes ?? 0;
+    document.getElementById('m-leader').textContent = leaderName;
+
+    const lr = (d.replicas || []).find(r => r.role === 'leader');
+    document.getElementById('s-committed-hint').textContent = lr ? `idx ${lr.commit_index}` : '-';
+
+    const lp = document.getElementById('log-panel');
+    if (d.eventLog?.length) {
+      lp.innerHTML = d.eventLog.map(ev => {
+        const t = new Date(ev.time).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+        return `<div class="log-entry ${ev.type||''}"><span class="time">${t}</span><span class="msg">${ev.msg}</span></div>`;
+      }).join('');
+    }
+  }
+
+  function tick() {
+    countdown--;
+    document.getElementById('auto-tag').textContent = countdown + 's';
+    if (countdown <= 0) fetchData();
+  }
+
+  fetchData();
+  setInterval(tick, 1000);
+</script>
+</body>
+</html>
