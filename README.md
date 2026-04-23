@@ -285,7 +285,7 @@ replica3  | Voted for replica2 term=1
 
 ## Bonus Features Implemented
 
-| Bonus (from PDF §11) | Status |
+| Bonus (from MiniRAFT.pdf ) | Status |
 |---|---|
 | Dashboard showing leader, term, log sizes | Implemented at `/dashboard` |
 | Stroke batching for performance | Gateway micro-batching + batch API |
@@ -298,6 +298,5 @@ replica3  | Voted for replica2 term=1
 | Document | Description |
 |----------|-------------|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Detailed architecture document (API specs, failure handling, integration logs) |
-| [DIAGRAMS.md](DIAGRAMS.md) | Mermaid source code for all diagrams |
 | [docs-and-reference/MiniRAFT.pdf](docs-and-reference/MiniRAFT.pdf) | Original assignment specification |
 | [logs/cluster_logs.txt](logs/cluster_logs.txt) | Captured failover event logs |
