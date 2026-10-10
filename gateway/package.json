@@ -2,9 +2,15 @@
   "name": "miniraft-gateway",
   "private": true,
   "dependencies": {
-    "express": "^4.21.0",
-    "axios": "^1.7.0",
-    "cors": "^2.8.5",
-    "ws": "^8.18.0"
+    "express": "4.22.3",
+    "axios": "1.20.0",
+    "cors": "2.8.6",
+    "ws": "8.22.0"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22 <23"
   }
 }
