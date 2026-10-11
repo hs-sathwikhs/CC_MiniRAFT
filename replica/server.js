@@ -1,10 +1,17 @@
 const express = require('express');
 const axios = require('axios');
-const cors = require('cors');
 
 const app = express();
-app.use(express.json({ limit: '10mb' }));
-app.use(cors());
+app.use(express.json({ limit: '256kb' }));
+
+const validId = value => typeof value === 'string' && /^[a-zA-Z0-9_.-]{1,80}$/.test(value);
+const validStroke = stroke => stroke && typeof stroke === 'object'
+  && ['x0', 'x1'].every(key => Number.isFinite(stroke[key]) && stroke[key] >= 0 && stroke[key] <= 1100)
+  && ['y0', 'y1'].every(key => Number.isFinite(stroke[key]) && stroke[key] >= 0 && stroke[key] <= 680)
+  && Number.isFinite(stroke.width) && stroke.width >= 1 && stroke.width <= 20
+  && /^#[a-f0-9]{6}$/i.test(stroke.color) && ['draw', 'erase'].includes(stroke.tool)
+  && validId(stroke.clientId) && validId(stroke.strokeId);
+const validInt = value => Number.isSafeInteger(value) && value >= -1;
 
 // ── Config ──────────────────────────────────────────────────────────
 const ID = process.env.REPLICA_ID || 'replica1';
@@ -269,6 +276,7 @@ app.get('/log', (req, res) => {
 
 // Accept single stroke from gateway (leader only)
 app.post('/stroke', (req, res) => {
+  if (!validStroke(req.body)) return res.status(400).json({ error: 'invalid stroke' });
   if (role !== 'leader') {
     return res.status(307).json({ error: 'not_leader', leader_id: leaderId });
   }
@@ -280,6 +288,7 @@ app.post('/stroke', (req, res) => {
 
 // Accept batch of strokes from gateway (leader only)
 app.post('/strokes', (req, res) => {
+  if (!Array.isArray(req.body.strokes) || req.body.strokes.length > 64 || !req.body.strokes.every(validStroke)) return res.status(400).json({ error: 'invalid stroke batch' });
   if (role !== 'leader') {
     return res.status(307).json({ error: 'not_leader', leader_id: leaderId });
   }
@@ -308,6 +317,7 @@ app.post('/clear', (req, res) => {
 app.post('/append-entries', (req, res) => {
   const { term: rTerm, leader_id: lid, prev_log_index: pli,
           prev_log_term: plt, entries = [], leader_commit: lc } = req.body;
+  if (![rTerm, pli, plt, lc].every(validInt) || rTerm < 0 || !validId(lid) || !Array.isArray(entries) || entries.length > 64 || !entries.every(e => e && validInt(e.term) && e.term >= 0 && (validStroke(e.data) || e.data?.type === 'clear'))) return res.status(400).json({ error: 'invalid append request' });
 
   if (rTerm < term) return res.json({ term, success: false });
 
@@ -358,6 +368,7 @@ app.post('/append-entries', (req, res) => {
 // Heartbeat RPC (lightweight - no entries)
 app.post('/heartbeat', (req, res) => {
   const { term: rTerm, leader_id: lid, leader_commit: lc = -1 } = req.body;
+  if (!validInt(rTerm) || rTerm < 0 || !validInt(lc) || !validId(lid)) return res.status(400).json({ error: 'invalid heartbeat' });
 
   if (rTerm < term) return res.json({ term, success: false });
 
@@ -379,6 +390,7 @@ app.post('/heartbeat', (req, res) => {
 // RequestVote RPC
 app.post('/request-vote', (req, res) => {
   const { term: rTerm, candidate_id: cid, last_log_index: lli, last_log_term: llt } = req.body;
+  if (![rTerm, lli, llt].every(validInt) || rTerm < 0 || !validId(cid)) return res.status(400).json({ error: 'invalid vote request' });
 
   if (rTerm < term) return res.json({ term, vote_granted: false });
   if (rTerm > term) stepDown(rTerm);
@@ -401,6 +413,7 @@ app.post('/request-vote', (req, res) => {
 
 // Sync-log RPC - returns committed entries from given index (leader only)
 app.post('/sync-log', (req, res) => {
+  if (!validInt(req.body.from_index) || req.body.from_index < 0) return res.status(400).json({ error: 'invalid log index' });
   if (role !== 'leader') {
     return res.status(307).json({ error: 'not_leader', leader_id: leaderId });
   }
@@ -408,6 +421,10 @@ app.post('/sync-log', (req, res) => {
   const end = commitIndex + 1;
   const entries = end > from ? raftLog.slice(from, end) : [];
   res.json({ term, leader_id: ID, from_index: from, commit_index: commitIndex, entries });
+});
+
+app.use((err, req, res, next) => {
+  res.status(err.status || 500).json({ error: 'request could not be processed' });
 });
 
 // ── Start server ────────────────────────────────────────────────────

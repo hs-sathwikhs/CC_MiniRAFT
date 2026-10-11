@@ -2,14 +2,21 @@ const express = require('express');
 const http = require('http');
 const { WebSocketServer } = require('ws');
 const axios = require('axios');
-const cors = require('cors');
 
 const app = express();
-app.use(express.json({ limit: '10mb' }));
-app.use(cors());
+app.use(express.json({ limit: '256kb' }));
+
+const validId = value => typeof value === 'string' && /^[a-zA-Z0-9_.-]{1,80}$/.test(value);
+const validStroke = stroke => stroke && typeof stroke === 'object'
+  && ['x0', 'x1'].every(key => Number.isFinite(stroke[key]) && stroke[key] >= 0 && stroke[key] <= 1100)
+  && ['y0', 'y1'].every(key => Number.isFinite(stroke[key]) && stroke[key] >= 0 && stroke[key] <= 680)
+  && Number.isFinite(stroke.width) && stroke.width >= 1 && stroke.width <= 20
+  && /^#[a-f0-9]{6}$/i.test(stroke.color) && ['draw', 'erase'].includes(stroke.tool)
+  && validId(stroke.clientId) && validId(stroke.strokeId);
+const validInt = value => Number.isSafeInteger(value) && value >= -1;
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
+const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 65536 });
 
 const PORT = parseInt(process.env.GATEWAY_PORT || '3000');
 const REPLICAS = (process.env.REPLICA_URLS || 'http://replica1:4001,http://replica2:4002,http://replica3:4003').split(',');
@@ -154,6 +161,7 @@ setTimeout(() => getLeader(), 1000);
 // Receive single committed entry from leader
 app.post('/commit', (req, res) => {
   const { index, term, data } = req.body;
+  if (!validInt(index) || index < 0 || !validInt(term) || term < 0 || !(validStroke(data) || data?.type === 'clear')) return res.status(400).json({ error: 'invalid commit' });
   if (seenCommits.has(index)) return res.json({ ok: true, deduped: 1 });
   seenCommits.add(index);
 
@@ -169,7 +177,8 @@ app.post('/commit', (req, res) => {
 
 // Receive batch of committed entries from leader
 app.post('/commit-batch', (req, res) => {
-  const entries = req.body.entries || [];
+  const entries = req.body.entries;
+  if (!Array.isArray(entries) || entries.length > 1024 || !entries.every(e => e && validInt(e.index) && e.index >= 0 && validInt(e.term) && e.term >= 0 && (validStroke(e.data) || e.data?.type === 'clear'))) return res.status(400).json({ error: 'invalid commit batch' });
   if (!entries.length) return res.json({ ok: true, count: 0 });
 
   let deduped = 0;
@@ -200,11 +209,12 @@ app.post('/commit-batch', (req, res) => {
 
 // Newly elected leader registers itself
 app.post('/notify-leader', (req, res) => {
-  const { leader_id, leader_url, term } = req.body;
+  const { leader_id, term } = req.body;
+  const leaderUrl = REPLICAS.find(url => new URL(url).hostname === leader_id);
+  if (!leaderUrl || !validInt(term) || term < 0) return res.status(400).json({ error: 'invalid leader' });
   console.log(`New leader: ${leader_id} term=${term}`);
 
-  const match = REPLICAS.find(u => u.split('//')[1].split(':')[0] === leader_id);
-  currentLeader = match || leader_url;
+  currentLeader = leaderUrl;
   console.log(`Leader URL: ${currentLeader}`);
 
   addLog(`New leader: ${leader_id} term=${term}`, 'election');
@@ -268,6 +278,26 @@ app.get('/dashboard-data', async (req, res) => {
 // ── WebSocket handling ──────────────────────────────────────────────
 wss.on('connection', async (ws) => {
   clients.add(ws);
+  ws.on('error', () => clients.delete(ws));
+  ws.on('close', () => clients.delete(ws));
+  ws.on('message', raw => {
+    metrics.totalMessages++;
+    const fail = error => ws.send(JSON.stringify({ type: 'error', error }));
+    let msg;
+    try { msg = JSON.parse(raw); } catch { return fail('invalid JSON'); }
+    if (!msg || typeof msg !== 'object') return fail('invalid drawing message');
+    if (msg.type === 'clear') {
+      getLeader().then(leader => {
+        if (!leader) return fail('no leader available');
+        axios.post(`${leader}/clear`, {}, { timeout: 2000 }).catch(() => fail('clear could not be sent'));
+      });
+      return;
+    }
+    const strokes = msg.type === 'stroke' ? [msg.stroke] : msg.type === 'strokes' ? msg.strokes : null;
+    if (!Array.isArray(strokes) || !strokes.length || strokes.length > 64 || !strokes.every(validStroke)) return fail('invalid stroke batch');
+    if (strokeQueue.length + strokes.length > 4096) return fail('drawing queue is full');
+    strokes.forEach(queueStroke);
+  });
   console.log(`Client connected total=${clients.size}`);
   addLog(`Client connected (total=${clients.size})`, 'info');
 
@@ -291,27 +321,11 @@ wss.on('connection', async (ws) => {
     } catch {}
   }
 
-  ws.on('message', (raw) => {
-    metrics.totalMessages++;
-    let msg;
-    try { msg = JSON.parse(raw); } catch { return; }
 
-    if (msg.type === 'stroke' && msg.stroke) {
-      queueStroke(msg.stroke);
-    } else if (msg.type === 'strokes' && msg.strokes) {
-      msg.strokes.forEach(s => { if (s) queueStroke(s); });
-    } else if (msg.type === 'clear') {
-      getLeader().then(l => {
-        if (l) axios.post(`${l}/clear`, {}, { timeout: 2000 }).catch(() => {});
-      });
-    }
-  });
+});
 
-  ws.on('close', () => {
-    clients.delete(ws);
-    console.log(`Client disconnected total=${clients.size}`);
-    addLog(`Client disconnected (total=${clients.size})`, 'info');
-  });
+app.use((err, req, res, next) => {
+  res.status(err.status || 500).json({ error: 'request could not be processed' });
 });
 
 // ── Start ───────────────────────────────────────────────────────────

@@ -1,0 +1,10 @@
+{
+  "name": "miniraft",
+  "private": true,
+  "scripts": {
+    "test": "node --test --test-concurrency=1 tests/*.test.js"
+  },
+  "engines": {
+    "node": ">=22 <23"
+  }
+}
