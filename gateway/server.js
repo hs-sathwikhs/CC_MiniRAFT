@@ -1,11 +1,16 @@
 const express = require('express');
-const http = require('http');
-const { WebSocketServer } = require('ws');
+const http = require('node:http');
+const { randomUUID } = require('node:crypto');
+const { WebSocketServer, WebSocket } = require('ws');
 const axios = require('axios');
 
 const app = express();
 app.use(express.json({ limit: '256kb' }));
-
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 65536 });
+const rpc = axios.create({ timeout: 400, proxy: false });
+const port = Number(process.env.GATEWAY_PORT || 3000);
+const replicaUrls = (process.env.REPLICA_URLS || 'http://replica1:4001,http://replica2:4002,http://replica3:4003').split(',').map(url => url.trim());
 const validId = value => typeof value === 'string' && /^[a-zA-Z0-9_.-]{1,80}$/.test(value);
 const validStroke = stroke => stroke && typeof stroke === 'object'
   && ['x0', 'x1'].every(key => Number.isFinite(stroke[key]) && stroke[key] >= 0 && stroke[key] <= 1100)
@@ -13,322 +18,175 @@ const validStroke = stroke => stroke && typeof stroke === 'object'
   && Number.isFinite(stroke.width) && stroke.width >= 1 && stroke.width <= 20
   && /^#[a-f0-9]{6}$/i.test(stroke.color) && ['draw', 'erase'].includes(stroke.tool)
   && validId(stroke.clientId) && validId(stroke.strokeId);
-const validInt = value => Number.isSafeInteger(value) && value >= -1;
 
-const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 65536 });
-
-const PORT = parseInt(process.env.GATEWAY_PORT || '3000');
-const REPLICAS = (process.env.REPLICA_URLS || 'http://replica1:4001,http://replica2:4002,http://replica3:4003').split(',');
-
-// ── State ───────────────────────────────────────────────────────────
 const clients = new Set();
-let currentLeader = null;
-const seenCommits = new Set();
-
-// Metrics for dashboard
-const metrics = {
-  strokesForwarded: 0,
-  strokesCommitted: 0,
-  failedOps: 0,
-  totalBroadcasts: 0,
-  totalMessages: 0,
-};
-
-// Event log for dashboard
 const eventLog = [];
+const metrics = { strokesForwarded: 0, strokesCommitted: 0, failedOps: 0, totalBroadcasts: 0, totalMessages: 0 };
+let currentLeader = null;
+let leaderTerm = 0;
+let replicas = [];
+let boardLog = [];
+let lastIndex = -1;
+let refreshing = null;
+let syncing = false;
+let sending = false;
+let flushTimer;
+let strokeQueue = [];
+
 function addLog(msg, type = 'info') {
   eventLog.unshift({ time: new Date().toISOString(), msg, type });
-  if (eventLog.length > 200) eventLog.length = 200;
+  if (eventLog.length > 50) eventLog.pop();
 }
 
-// Stroke batch queue
-let strokeQueue = [];
-let flushTimer = null;
-const BATCH_SIZE = 64;
-const FLUSH_MS = 12;
-
-// ── Leader discovery ────────────────────────────────────────────────
-async function findLeader() {
-  for (const url of REPLICAS) {
-    try {
-      const r = await axios.get(`${url}/status`, { timeout: 1200 });
-      if (r.data.role === 'leader') {
-        console.log(`Leader found: ${url} term=${r.data.term}`);
-        return url;
-      }
-      if (r.data.leader_id) {
-        const match = REPLICAS.find(u => u.includes(r.data.leader_id));
-        if (match) return match;
-      }
-    } catch {}
-  }
-  return null;
+function send(ws, msg) {
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
 
-async function getLeader() {
-  if (currentLeader) return currentLeader;
-  for (let i = 0; i < 6; i++) {
-    const leader = await findLeader();
-    if (leader) { currentLeader = leader; return leader; }
-    console.log(`No leader yet (${i + 1}/6)`);
-    await new Promise(r => setTimeout(r, 300));
-  }
-  return null;
-}
-
-// ── Broadcast to WebSocket clients ──────────────────────────────────
 function broadcast(msg) {
-  const data = JSON.stringify(msg);
-  const dead = [];
-  for (const ws of clients) {
-    try { ws.send(data); } catch { dead.push(ws); }
-  }
-  dead.forEach(ws => clients.delete(ws));
+  for (const ws of clients) if (ws.ready) send(ws, msg);
   metrics.totalBroadcasts++;
 }
 
-// ── Stroke forwarding ──────────────────────────────────────────────
+function refreshCluster() {
+  if (refreshing) return refreshing;
+  refreshing = (async () => {
+    replicas = await Promise.all(replicaUrls.map(async url => {
+      try { return { ...(await rpc.get(`${url}/status`)).data, url, online: true }; }
+      catch { return { id: new URL(url).hostname, url, online: false, role: 'offline', term: null, log_length: null, commit_index: null }; }
+    }));
+    const leader = replicas.filter(node => node.role === 'leader').sort((a, b) => b.term - a.term)[0];
+    const nextUrl = leader?.url || null;
+    if (currentLeader !== nextUrl || (leader && leader.term !== leaderTerm)) {
+      currentLeader = nextUrl;
+      if (leader) leaderTerm = leader.term;
+      addLog(leader ? `${leader.id} elected in term ${leader.term}` : 'Waiting for a leader', 'election');
+      broadcast({ type: 'leader_change', leader_id: leader?.id || null, term: leader?.term || null });
+    }
+  })().finally(() => { refreshing = null; });
+  return refreshing;
+}
+
+async function syncCommits() {
+  if (syncing || !currentLeader) return;
+  syncing = true;
+  const leader = currentLeader;
+  try {
+    const { data } = await rpc.post(`${leader}/sync-log`, { from_index: lastIndex + 1 });
+    if (leader !== currentLeader || data.term < leaderTerm || data.from_index !== lastIndex + 1) return;
+    for (const entry of data.entries) {
+      lastIndex++;
+      const op = entry.data;
+      if (op.type === 'noop') continue;
+      if (op.type === 'clear') {
+        boardLog = [];
+        broadcast({ type: 'clear', strokeId: op.strokeId });
+      } else {
+        boardLog.push(op);
+        broadcast({ type: 'stroke', stroke: op });
+      }
+      metrics.strokesCommitted++;
+    }
+    if (data.entries.length) addLog(`Applied entries through ${lastIndex}`, 'commit');
+    if (lastIndex < data.commit_index) setImmediate(syncCommits);
+  } catch {
+    if (leader === currentLeader) currentLeader = null;
+  } finally { syncing = false; }
+}
+
 async function forwardStrokes(strokes) {
-  if (!strokes.length) return true;
-
   for (let attempt = 0; attempt < 4; attempt++) {
-    const leader = await getLeader();
-    if (!leader) { metrics.failedOps++; addLog('No leader - strokes dropped', 'error'); return false; }
-
-    try {
-      const r = await axios.post(`${leader}/strokes`, { strokes }, {
-        timeout: 2000, validateStatus: s => s === 200 || s === 307,
-      });
-
-      if (r.status === 200) {
+    if (!currentLeader) await refreshCluster();
+    if (currentLeader) {
+      try {
+        await rpc.post(`${currentLeader}/strokes`, { strokes });
         metrics.strokesForwarded += strokes.length;
         return true;
-      }
-      if (r.status === 307) {
-        const hint = r.data;
-        if (hint && hint.leader_id) {
-          currentLeader = REPLICAS.find(u => u.includes(hint.leader_id)) || null;
-        } else { currentLeader = null; }
-      }
-    } catch {
-      currentLeader = null;
+      } catch { currentLeader = null; }
     }
-    await new Promise(r => setTimeout(r, 50));
+    await new Promise(res => setTimeout(res, 100));
   }
-
   metrics.failedOps++;
-  addLog(`Stroke batch dropped after 4 retries`, 'error');
   return false;
 }
 
 function queueStroke(stroke) {
   strokeQueue.push(stroke);
-  if (!flushTimer) {
-    flushTimer = setTimeout(flushQueue, FLUSH_MS);
-  }
+  if (!flushTimer) flushTimer = setTimeout(flushQueue, 12);
 }
 
 async function flushQueue() {
   flushTimer = null;
-  if (!strokeQueue.length) return;
-  const batch = strokeQueue;
-  strokeQueue = [];
-  const ok = await forwardStrokes(batch);
-  if (!ok) console.log(`Dropped stroke batch size=${batch.length}`);
+  if (sending || !strokeQueue.length) return;
+  sending = true;
+  const batch = strokeQueue.splice(0, 64);
+  try {
+    if (!await forwardStrokes(batch)) broadcast({ type: 'error', error: 'drawing could not be sent' });
+  } finally {
+    sending = false;
+    if (strokeQueue.length) flushTimer = setTimeout(flushQueue, 12);
+  }
 }
 
-// ── Health check loop ───────────────────────────────────────────────
-setInterval(async () => {
-  if (!currentLeader) return;
-  try {
-    const r = await axios.get(`${currentLeader}/status`, { timeout: 1200 });
-    if (r.data.role !== 'leader') {
-      addLog('Leader health check failed - clearing', 'warn');
-      currentLeader = null;
-    }
-  } catch {
-    addLog('Leader unreachable - clearing', 'warn');
-    currentLeader = null;
-  }
-}, 2000);
-
-// Warm-up leader discovery on start
-setTimeout(() => getLeader(), 1000);
-
-// ── REST endpoints ──────────────────────────────────────────────────
-
-// Receive single committed entry from leader
-app.post('/commit', (req, res) => {
-  const { index, term, data } = req.body;
-  if (!validInt(index) || index < 0 || !validInt(term) || term < 0 || !(validStroke(data) || data?.type === 'clear')) return res.status(400).json({ error: 'invalid commit' });
-  if (seenCommits.has(index)) return res.json({ ok: true, deduped: 1 });
-  seenCommits.add(index);
-
-  if (data && data.type === 'clear') {
-    broadcast({ type: 'clear' });
-  } else {
-    broadcast({ type: 'stroke', stroke: data });
-  }
-  metrics.strokesCommitted++;
-  addLog(`Committed index=${index}`, 'commit');
+function leaderHint(req, res) {
+  const { leader_id: id, term } = req.body;
+  if (!replicaUrls.some(url => new URL(url).hostname === id) || !Number.isSafeInteger(term) || term < 0) return res.status(400).json({ error: 'invalid leader' });
+  refreshCluster().then(syncCommits);
   res.json({ ok: true });
-});
+}
 
-// Receive batch of committed entries from leader
-app.post('/commit-batch', (req, res) => {
-  const entries = req.body.entries;
-  if (!Array.isArray(entries) || entries.length > 1024 || !entries.every(e => e && validInt(e.index) && e.index >= 0 && validInt(e.term) && e.term >= 0 && (validStroke(e.data) || e.data?.type === 'clear'))) return res.status(400).json({ error: 'invalid commit batch' });
-  if (!entries.length) return res.json({ ok: true, count: 0 });
-
-  let deduped = 0;
-  const fresh = [];
-  for (const e of entries) {
-    if (seenCommits.has(e.index)) { deduped++; continue; }
-    seenCommits.add(e.index);
-    fresh.push(e);
-  }
-  if (!fresh.length) return res.json({ ok: true, count: 0, deduped });
-
-  // Batch broadcast: group strokes, flush on clear
-  const buf = [];
-  for (const e of fresh) {
-    if (e.data && e.data.type === 'clear') {
-      if (buf.length) { broadcast({ type: 'strokes', strokes: [...buf] }); buf.length = 0; }
-      broadcast({ type: 'clear' });
-    } else {
-      buf.push(e.data);
-    }
-  }
-  if (buf.length) broadcast({ type: 'strokes', strokes: buf });
-
-  metrics.strokesCommitted += fresh.length;
-  addLog(`Committed batch count=${fresh.length} upto=${fresh[fresh.length - 1].index} deduped=${deduped}`, 'commit');
-  res.json({ ok: true, count: fresh.length, deduped });
-});
-
-// Newly elected leader registers itself
-app.post('/notify-leader', (req, res) => {
-  const { leader_id, term } = req.body;
-  const leaderUrl = REPLICAS.find(url => new URL(url).hostname === leader_id);
-  if (!leaderUrl || !validInt(term) || term < 0) return res.status(400).json({ error: 'invalid leader' });
-  console.log(`New leader: ${leader_id} term=${term}`);
-
-  currentLeader = leaderUrl;
-  console.log(`Leader URL: ${currentLeader}`);
-
-  addLog(`New leader: ${leader_id} term=${term}`, 'election');
-  broadcast({ type: 'leader_change', leader_id, term });
-  res.json({ ok: true });
-});
-
-// Broadcast canvas clear
+// hints trigger a read from the leader; their bodies never become board entries.
+app.post('/notify-leader', leaderHint);
+app.post('/commit-batch', leaderHint);
 app.post('/clear', (req, res) => {
-  broadcast({ type: 'clear' });
-  res.json({ ok: true });
+  if (strokeQueue.length >= 4096) return res.status(503).json({ error: 'drawing queue is full' });
+  queueStroke({ type: 'clear', strokeId: randomUUID() });
+  res.status(202).json({ ok: true });
 });
+app.get('/status', (req, res) => res.json({
+  current_leader: currentLeader, connected_clients: clients.size, pending_strokes: strokeQueue.length,
+  replicas: replicaUrls, term: currentLeader ? leaderTerm : null,
+}));
+app.get('/dashboard-data', (req, res) => res.json({
+  connectedClients: clients.size, currentLeader, metrics, replicas,
+  pendingStrokes: strokeQueue.length, eventLog,
+}));
 
-// Gateway status
-app.get('/status', async (req, res) => {
-  let leaderTerm = null;
-  if (currentLeader) {
-    try {
-      const r = await axios.get(`${currentLeader}/status`, { timeout: 1200 });
-      leaderTerm = r.data.term;
-    } catch {}
-  }
-  res.json({
-    current_leader: currentLeader,
-    connected_clients: clients.size,
-    pending_strokes: strokeQueue.length,
-    replicas: REPLICAS,
-    term: leaderTerm,
-  });
-});
-
-// Dashboard data endpoint - aggregates all cluster info
-app.get('/dashboard-data', async (req, res) => {
-  const replicaStatus = await Promise.allSettled(
-    REPLICAS.map(async url => {
-      const r = await axios.get(`${url}/status`, { timeout: 800 });
-      return { url, ...r.data, online: true };
-    })
-  );
-
-  const replicas = replicaStatus.map((r, i) => {
-    if (r.status === 'fulfilled') return r.value;
-    return {
-      url: REPLICAS[i],
-      id: REPLICAS[i].split('//')[1].split(':')[0],
-      online: false, role: 'unknown', term: 0,
-      log_length: 0, commit_index: -1,
-    };
-  });
-
-  res.json({
-    connectedClients: clients.size,
-    currentLeader,
-    metrics,
-    replicas,
-    pendingStrokes: strokeQueue.length,
-    eventLog: eventLog.slice(0, 50),
-  });
-});
-
-// ── WebSocket handling ──────────────────────────────────────────────
-wss.on('connection', async (ws) => {
+wss.on('connection', async ws => {
+  ws.ready = false;
   clients.add(ws);
   ws.on('error', () => clients.delete(ws));
   ws.on('close', () => clients.delete(ws));
   ws.on('message', raw => {
     metrics.totalMessages++;
-    const fail = error => ws.send(JSON.stringify({ type: 'error', error }));
+    const fail = error => send(ws, { type: 'error', error });
     let msg;
     try { msg = JSON.parse(raw); } catch { return fail('invalid JSON'); }
     if (!msg || typeof msg !== 'object') return fail('invalid drawing message');
     if (msg.type === 'clear') {
-      getLeader().then(leader => {
-        if (!leader) return fail('no leader available');
-        axios.post(`${leader}/clear`, {}, { timeout: 2000 }).catch(() => fail('clear could not be sent'));
-      });
-      return;
+      if (strokeQueue.length >= 4096) return fail('drawing queue is full');
+      return queueStroke({ type: 'clear', strokeId: randomUUID() });
     }
     const strokes = msg.type === 'stroke' ? [msg.stroke] : msg.type === 'strokes' ? msg.strokes : null;
     if (!Array.isArray(strokes) || !strokes.length || strokes.length > 64 || !strokes.every(validStroke)) return fail('invalid stroke batch');
     if (strokeQueue.length + strokes.length > 4096) return fail('drawing queue is full');
     strokes.forEach(queueStroke);
   });
-  console.log(`Client connected total=${clients.size}`);
-  addLog(`Client connected (total=${clients.size})`, 'info');
-
-  // Send current leader info
-  const leader = await getLeader();
-  if (leader) {
-    const rid = leader.split('//')[1].split(':')[0];
-    let leaderTerm = null;
-    try {
-      const r = await axios.get(`${leader}/status`, { timeout: 1200 });
-      leaderTerm = r.data.term;
-    } catch {}
-    try { ws.send(JSON.stringify({ type: 'leader', leader_id: rid, term: leaderTerm })); } catch {}
-  }
-
-  // Replay committed log to new client
-  if (leader) {
-    try {
-      const r = await axios.get(`${leader}/log`, { timeout: 2000 });
-      ws.send(JSON.stringify({ type: 'full_log', log: r.data.log || [] }));
-    } catch {}
-  }
-
-
+  await refreshCluster();
+  await syncCommits();
+  send(ws, { type: 'full_log', log: boardLog });
+  send(ws, { type: 'leader', leader_id: currentLeader ? new URL(currentLeader).hostname : null, term: currentLeader ? leaderTerm : null });
+  ws.ready = true;
 });
 
-app.use((err, req, res, next) => {
-  res.status(err.status || 500).json({ error: 'request could not be processed' });
-});
-
-// ── Start ───────────────────────────────────────────────────────────
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Gateway started on port ${PORT}`);
+const clusterTimer = setInterval(() => refreshCluster().then(syncCommits), 400);
+const commitTimer = setInterval(syncCommits, 150);
+app.use((err, req, res, next) => res.status(err.status || 500).json({ error: 'request could not be processed' }));
+server.listen(port, '0.0.0.0', () => { console.log(`gateway port=${port}`); refreshCluster(); });
+process.on('SIGTERM', () => {
+  clearInterval(clusterTimer);
+  clearInterval(commitTimer);
+  clearTimeout(flushTimer);
+  for (const ws of clients) ws.close();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 500).unref();
 });
