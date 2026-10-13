@@ -63,6 +63,7 @@ async function startCluster(t) {
   }
 
   async function connect() {
+    await eventually(async () => (await request(gatewayUrl + '/status')).status === 200, 'gateway ready');
     const ws = new WebSocket(gatewayUrl.replace('http:', 'ws:') + '/ws');
     const messages = [];
     sockets.add(ws);

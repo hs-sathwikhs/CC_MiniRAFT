@@ -3,6 +3,7 @@ const http = require('node:http');
 const { randomUUID } = require('node:crypto');
 const { WebSocketServer, WebSocket } = require('ws');
 const axios = require('axios');
+const { isDeepStrictEqual } = require('node:util');
 
 const app = express();
 app.use(express.json({ limit: '256kb' }));
@@ -12,7 +13,7 @@ const rpc = axios.create({ timeout: 400, proxy: false });
 const port = Number(process.env.GATEWAY_PORT || 3000);
 const replicaUrls = (process.env.REPLICA_URLS || 'http://replica1:4001,http://replica2:4002,http://replica3:4003').split(',').map(url => url.trim());
 const validId = value => typeof value === 'string' && /^[a-zA-Z0-9_.-]{1,80}$/.test(value);
-const validStroke = stroke => stroke && typeof stroke === 'object'
+const validStroke = stroke => stroke && typeof stroke === 'object' && stroke.type === undefined
   && ['x0', 'x1'].every(key => Number.isFinite(stroke[key]) && stroke[key] >= 0 && stroke[key] <= 1100)
   && ['y0', 'y1'].every(key => Number.isFinite(stroke[key]) && stroke[key] >= 0 && stroke[key] <= 680)
   && Number.isFinite(stroke.width) && stroke.width >= 1 && stroke.width <= 20
@@ -30,8 +31,10 @@ let lastIndex = -1;
 let refreshing = null;
 let syncing = false;
 let sending = false;
-let flushTimer;
-let strokeQueue = [];
+let retryAt = 0;
+const pendingOps = new Map();
+const committedOps = new Map();
+const opKey = op => `${op.clientId || 'legacy'}:${op.strokeId}`;
 
 function addLog(msg, type = 'info') {
   eventLog.unshift({ time: new Date().toISOString(), msg, type });
@@ -77,9 +80,14 @@ async function syncCommits() {
       lastIndex++;
       const op = entry.data;
       if (op.type === 'noop') continue;
+      const key = opKey(op);
+      committedOps.set(key, { op, index: lastIndex });
+      for (const ws of pendingOps.get(key)?.clients || []) acknowledge(ws, op, lastIndex);
+      pendingOps.delete(key);
+      retryAt = 0;
       if (op.type === 'clear') {
         boardLog = [];
-        broadcast({ type: 'clear', strokeId: op.strokeId });
+        broadcast({ type: 'clear', ...op });
       } else {
         boardLog.push(op);
         broadcast({ type: 'stroke', stroke: op });
@@ -93,38 +101,63 @@ async function syncCommits() {
   } finally { syncing = false; }
 }
 
-async function forwardStrokes(strokes) {
-  for (let attempt = 0; attempt < 4; attempt++) {
-    if (!currentLeader) await refreshCluster();
-    if (currentLeader) {
-      try {
-        await rpc.post(`${currentLeader}/strokes`, { strokes });
-        metrics.strokesForwarded += strokes.length;
-        return true;
-      } catch { currentLeader = null; }
-    }
-    await new Promise(res => setTimeout(res, 100));
-  }
-  metrics.failedOps++;
-  return false;
+function acknowledge(ws, op, index) {
+  send(ws, { type: 'ack', clientId: op.clientId, strokeId: op.strokeId, index });
 }
 
-function queueStroke(stroke) {
-  strokeQueue.push(stroke);
-  if (!flushTimer) flushTimer = setTimeout(flushQueue, 12);
+function queueStrokes(strokes, ws) {
+  const batch = new Map();
+  for (const op of strokes) {
+    const key = opKey(op);
+    const prev = batch.get(key) || pendingOps.get(key)?.op || committedOps.get(key)?.op;
+    if (prev && !isDeepStrictEqual(prev, op)) return 'operation id already used';
+    batch.set(key, op);
+  }
+  const fresh = [...batch.keys()].filter(key => !pendingOps.has(key) && !committedOps.has(key));
+  if (pendingOps.size + fresh.length > 4096) return 'drawing queue is full';
+  for (const [key, op] of batch) {
+    const committed = committedOps.get(key);
+    if (committed) { if (ws) acknowledge(ws, op, committed.index); continue; }
+    if (!pendingOps.has(key)) pendingOps.set(key, { op, since: Date.now(), clients: new Set() });
+    if (ws) {
+      pendingOps.get(key).clients.add(ws);
+      send(ws, { type: 'pending', strokeId: op.strokeId, clientId: op.clientId });
+    }
+  }
+  return null;
 }
 
 async function flushQueue() {
-  flushTimer = null;
-  if (sending || !strokeQueue.length) return;
-  sending = true;
-  const batch = strokeQueue.splice(0, 64);
-  try {
-    if (!await forwardStrokes(batch)) broadcast({ type: 'error', error: 'drawing could not be sent' });
-  } finally {
-    sending = false;
-    if (strokeQueue.length) flushTimer = setTimeout(flushQueue, 12);
+  for (const [key, item] of pendingOps) {
+    if (Date.now() - item.since < 15000) continue;
+    for (const ws of item.clients) send(ws, { type: 'unconfirmed', strokeId: item.op.strokeId,
+      clientId: item.op.clientId, error: 'No commit confirmed. Retry when the cluster is ready.' });
+    pendingOps.delete(key);
+    metrics.failedOps++;
   }
+  if (sending || !pendingOps.size || Date.now() < retryAt) return;
+  const leader = replicas.find(node => node.url === currentLeader && node.hasQuorum);
+  if (!leader) return;
+  sending = true;
+  retryAt = Date.now() + 700;
+  const strokes = [...pendingOps.values()].slice(0, 64).map(item => item.op);
+  try {
+    await rpc.post(`${leader.url}/strokes`, { strokes });
+    metrics.strokesForwarded += strokes.length;
+  } catch (err) {
+    if (err.response?.status === 409) {
+      for (const op of strokes) {
+        const key = opKey(op);
+        for (const ws of pendingOps.get(key)?.clients || []) send(ws, { type: 'error',
+          strokeId: op.strokeId, clientId: op.clientId, error: 'operation id already used' });
+        pendingOps.delete(key);
+      }
+    } else if (currentLeader === leader.url) currentLeader = null;
+  } finally { sending = false; }
+}
+
+function clearOp(msg) {
+  return { type: 'clear', clientId: msg?.clientId ?? 'legacy', strokeId: msg?.strokeId ?? randomUUID() };
 }
 
 function leaderHint(req, res) {
@@ -138,17 +171,19 @@ function leaderHint(req, res) {
 app.post('/notify-leader', leaderHint);
 app.post('/commit-batch', leaderHint);
 app.post('/clear', (req, res) => {
-  if (strokeQueue.length >= 4096) return res.status(503).json({ error: 'drawing queue is full' });
-  queueStroke({ type: 'clear', strokeId: randomUUID() });
-  res.status(202).json({ ok: true });
+  const op = clearOp(req.body);
+  if (!validId(op.clientId) || !validId(op.strokeId)) return res.status(400).json({ error: 'invalid clear' });
+  const error = queueStrokes([op]);
+  if (error) return res.status(503).json({ error });
+  res.status(202).json({ ok: true, ...op });
 });
 app.get('/status', (req, res) => res.json({
-  current_leader: currentLeader, connected_clients: clients.size, pending_strokes: strokeQueue.length,
+  current_leader: currentLeader, connected_clients: clients.size, pending_strokes: pendingOps.size,
   replicas: replicaUrls, term: currentLeader ? leaderTerm : null,
 }));
 app.get('/dashboard-data', (req, res) => res.json({
   connectedClients: clients.size, currentLeader, metrics, replicas,
-  pendingStrokes: strokeQueue.length, eventLog,
+  pendingStrokes: pendingOps.size, eventLog,
 }));
 
 wss.on('connection', async ws => {
@@ -163,13 +198,16 @@ wss.on('connection', async ws => {
     try { msg = JSON.parse(raw); } catch { return fail('invalid JSON'); }
     if (!msg || typeof msg !== 'object') return fail('invalid drawing message');
     if (msg.type === 'clear') {
-      if (strokeQueue.length >= 4096) return fail('drawing queue is full');
-      return queueStroke({ type: 'clear', strokeId: randomUUID() });
+      const op = clearOp(msg);
+      if (!validId(op.clientId) || !validId(op.strokeId)) return fail('invalid clear');
+      const error = queueStrokes([op], ws);
+      if (error) fail(error);
+      return;
     }
     const strokes = msg.type === 'stroke' ? [msg.stroke] : msg.type === 'strokes' ? msg.strokes : null;
     if (!Array.isArray(strokes) || !strokes.length || strokes.length > 64 || !strokes.every(validStroke)) return fail('invalid stroke batch');
-    if (strokeQueue.length + strokes.length > 4096) return fail('drawing queue is full');
-    strokes.forEach(queueStroke);
+    const error = queueStrokes(strokes, ws);
+    if (error) fail(error);
   });
   await refreshCluster();
   await syncCommits();
@@ -180,12 +218,13 @@ wss.on('connection', async ws => {
 
 const clusterTimer = setInterval(() => refreshCluster().then(syncCommits), 400);
 const commitTimer = setInterval(syncCommits, 150);
+const flushTimer = setInterval(flushQueue, 25);
 app.use((err, req, res, next) => res.status(err.status || 500).json({ error: 'request could not be processed' }));
 server.listen(port, '0.0.0.0', () => { console.log(`gateway port=${port}`); refreshCluster(); });
 process.on('SIGTERM', () => {
   clearInterval(clusterTimer);
   clearInterval(commitTimer);
-  clearTimeout(flushTimer);
+  clearInterval(flushTimer);
   for (const ws of clients) ws.close();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 500).unref();

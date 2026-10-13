@@ -1,5 +1,6 @@
 const express = require('express');
 const axios = require('axios');
+const { isDeepStrictEqual } = require('node:util');
 const { randomUUID } = require('node:crypto');
 
 const app = express();
@@ -14,7 +15,7 @@ const heartbeatMs = 150;
 
 const validId = value => typeof value === 'string' && /^[a-zA-Z0-9_.-]{1,80}$/.test(value);
 const validInt = value => Number.isSafeInteger(value) && value >= -1;
-const validStroke = stroke => stroke && typeof stroke === 'object'
+const validStroke = stroke => stroke && typeof stroke === 'object' && stroke.type === undefined
   && ['x0', 'x1'].every(key => Number.isFinite(stroke[key]) && stroke[key] >= 0 && stroke[key] <= 1100)
   && ['y0', 'y1'].every(key => Number.isFinite(stroke[key]) && stroke[key] >= 0 && stroke[key] <= 680)
   && Number.isFinite(stroke.width) && stroke.width >= 1 && stroke.width <= 20
@@ -31,6 +32,11 @@ let term = 0;
 let votedFor = null;
 let leaderId = null;
 let raftLog = [];
+let opIndex = new Map();
+const opKey = op => `${op.clientId || 'legacy'}:${op.strokeId}`;
+function indexLog() {
+  opIndex = new Map(raftLog.filter(entry => entry.data.strokeId).map(entry => [opKey(entry.data), entry.data]));
+}
 let commitIndex = -1;
 let nextIdx = {};
 let matchIdx = {};
@@ -157,6 +163,7 @@ async function syncFromLeader(id, requestTerm) {
     if (!Array.isArray(data.entries) || !data.entries.every(validEntry) || from + data.entries.length - 1 > data.commit_index) return;
     if (data.entries.length) {
       raftLog.splice(from, raftLog.length - from, ...data.entries);
+      indexLog();
       commitIndex = from + data.entries.length - 1;
       console.log(`catch-up ${nodeId} entries=${data.entries.length} commit=${commitIndex}`);
     }
@@ -179,7 +186,18 @@ function appendStrokes(strokes, res) {
   if (!Array.isArray(strokes) || !strokes.length || strokes.length > 64 || !strokes.every(validOp)) return res.status(400).json({ error: 'invalid stroke batch' });
   if (role !== 'leader') return res.status(307).json({ error: 'not_leader', leader_id: leaderId });
   const from = raftLog.length;
-  strokes.forEach(data => raftLog.push({ term, data }));
+  const batch = new Map();
+  for (const data of strokes) {
+    const key = opKey(data);
+    const prev = batch.get(key) || opIndex.get(key);
+    if (prev && !isDeepStrictEqual(prev, data)) return res.status(409).json({ error: 'operation id already used' });
+    batch.set(key, data);
+  }
+  for (const [key, data] of batch) {
+    if (opIndex.has(key)) continue;
+    opIndex.set(key, data);
+    raftLog.push({ term, data });
+  }
   replicateAll();
   res.json({ ok: true, from_index: from, to_index: raftLog.length - 1 });
 }
@@ -212,8 +230,11 @@ function appendEntries(req, res) {
   }
   for (let idx = 0; idx < entries.length; idx++) {
     const at = prevIdx + 1 + idx;
-    if (at < raftLog.length && !sameEntry(raftLog[at], entries[idx])) raftLog.splice(at);
-    if (at === raftLog.length) raftLog.push(entries[idx]);
+    if (at < raftLog.length && !sameEntry(raftLog[at], entries[idx])) { raftLog.splice(at); indexLog(); }
+    if (at === raftLog.length) {
+      raftLog.push(entries[idx]);
+      if (entries[idx].data.strokeId) opIndex.set(opKey(entries[idx].data), entries[idx].data);
+    }
   }
   // an empty heartbeat only confirms the prefix it actually matched.
   commitIndex = Math.max(commitIndex, Math.min(leaderCommit, prevIdx + entries.length));
