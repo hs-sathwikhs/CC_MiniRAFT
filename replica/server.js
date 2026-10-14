@@ -20,8 +20,11 @@ const validStroke = stroke => stroke && typeof stroke === 'object' && stroke.typ
   && ['y0', 'y1'].every(key => Number.isFinite(stroke[key]) && stroke[key] >= 0 && stroke[key] <= 680)
   && Number.isFinite(stroke.width) && stroke.width >= 1 && stroke.width <= 20
   && /^#[a-f0-9]{6}$/i.test(stroke.color) && ['draw', 'erase'].includes(stroke.tool)
-  && validId(stroke.clientId) && validId(stroke.strokeId);
-const validOp = data => validStroke(data) || (data?.type === 'clear' && validId(data.strokeId));
+  && validId(stroke.clientId) && validId(stroke.strokeId)
+  && (stroke.drawId === undefined || validId(stroke.drawId));
+const validOp = op => validStroke(op) || (op && validId(op.strokeId)
+  && ((op.type === 'clear' && (op.clientId === undefined || validId(op.clientId)))
+    || (['undo', 'redo'].includes(op.type) && validId(op.clientId) && validId(op.drawId))));
 const validEntry = entry => entry && validInt(entry.term) && entry.term >= 0
   && (validOp(entry.data) || entry.data?.type === 'noop');
 const peerUrl = id => peers.find(url => new URL(url).hostname === id);

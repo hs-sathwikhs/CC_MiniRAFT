@@ -18,7 +18,12 @@ const validStroke = stroke => stroke && typeof stroke === 'object' && stroke.typ
   && ['y0', 'y1'].every(key => Number.isFinite(stroke[key]) && stroke[key] >= 0 && stroke[key] <= 680)
   && Number.isFinite(stroke.width) && stroke.width >= 1 && stroke.width <= 20
   && /^#[a-f0-9]{6}$/i.test(stroke.color) && ['draw', 'erase'].includes(stroke.tool)
-  && validId(stroke.clientId) && validId(stroke.strokeId);
+  && validId(stroke.clientId) && validId(stroke.strokeId)
+  && (stroke.drawId === undefined || validId(stroke.drawId));
+
+const validOp = op => validStroke(op) || (op && validId(op.strokeId)
+  && ((op.type === 'clear' && (op.clientId === undefined || validId(op.clientId)))
+    || (['undo', 'redo'].includes(op.type) && validId(op.clientId) && validId(op.drawId))));
 
 const clients = new Set();
 const eventLog = [];
@@ -204,8 +209,8 @@ wss.on('connection', async ws => {
       if (error) fail(error);
       return;
     }
-    const strokes = msg.type === 'stroke' ? [msg.stroke] : msg.type === 'strokes' ? msg.strokes : null;
-    if (!Array.isArray(strokes) || !strokes.length || strokes.length > 64 || !strokes.every(validStroke)) return fail('invalid stroke batch');
+    const strokes = msg.type === 'stroke' ? [msg.stroke] : ['strokes', 'ops'].includes(msg.type) ? msg.strokes : null;
+    if (!Array.isArray(strokes) || !strokes.length || strokes.length > 64 || !strokes.every(validOp)) return fail('invalid stroke batch');
     const error = queueStrokes(strokes, ws);
     if (error) fail(error);
   });

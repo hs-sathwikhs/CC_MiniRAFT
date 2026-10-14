@@ -3,3 +3,4 @@ ENV NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1
 COPY nginx.conf /etc/nginx/templates/default.conf.template
 COPY index.html /usr/share/nginx/html/index.html
 COPY dashboard.html /usr/share/nginx/html/dashboard.html
+COPY board.js boardState.js favicon.svg /usr/share/nginx/html/

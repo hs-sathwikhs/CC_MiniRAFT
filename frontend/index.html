@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MiniRAFT Collaborative Whiteboard</title>
@@ -234,6 +235,24 @@
       font-family: 'JetBrains Mono', monospace; color: var(--text-secondary);
     }
     .shortcuts { display: flex; gap: 4px; align-items: center; }
+    .canvas-container { width: 100%; max-width: 1100px; }
+    canvas { width: 100%; height: auto; background: #f4f1e9; }
+    #preview { position: absolute; inset: 0; background: transparent; touch-action: none; }
+    #feedback { margin-top: 12px; font-size: 12px; }
+    button:disabled { opacity: .4; cursor: default; }
+    dialog { margin: auto; padding: 24px; border: 1px solid #888; border-radius: 8px; max-width: calc(100% - 32px); }
+    dialog p { margin: 12px 0; }
+    dialog button { padding: 10px 14px; }
+    @media (max-width: 700px) {
+      body { height: auto; min-height: 100dvh; overflow: auto; }
+      header { padding: 0 12px; }
+      .main { flex-direction: column; }
+      .sidebar { width: 100%; display: grid; grid-template-columns: 1fr 1fr; }
+      .sidebar .divider, .sidebar .section-label { display: none; }
+      .canvas-wrap { padding: 12px; }
+      .canvas-footer .shortcuts { display: none; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::after { animation: none !important; transition: none !important; } }
   </style>
 </head>
 <body>
@@ -290,8 +309,8 @@
     <div class="divider"></div>
     <div class="section-label">Actions</div>
     <div class="action-list">
-      <button class="act-btn" onclick="undo()">↩ Undo</button>
-      <button class="act-btn" onclick="clearLocal()">Clear Local</button>
+      <button id="undoBtn" class="act-btn" onclick="undo()">Undo</button>
+      <button id="redoBtn" class="act-btn" onclick="redo()">Redo</button>
       <button class="act-btn danger" onclick="clearForEveryone()">Clear Everyone</button>
       <button class="act-btn" onclick="exportPNG()">↓ Export PNG</button>
     </div>
@@ -304,9 +323,10 @@
       <div class="stat-row"><span class="stat-label">Strokes</span><span class="stat-value" id="st-strokes">0</span></div>
       <div class="stat-row"><span class="stat-label">Latency</span><span class="stat-value" id="st-latency">-</span></div>
       <div class="stat-row"><span class="stat-label">Reconnects</span><span class="stat-value" id="st-reconnects">0</span></div>
+      <div class="stat-row"><span class="stat-label">Pending</span><span class="stat-value" id="st-pending">0</span></div>
       <div class="client-chip">
         <span class="dot"></span>
-        <span id="client-id">xxxxx</span>
+        <span id="client-id"></span>
       </div>
     </div>
 
@@ -314,8 +334,10 @@
 
   <div class="canvas-wrap">
     <div class="canvas-container">
-      <canvas id="canvas" width="1100" height="680"></canvas>
+      <canvas id="canvas" width="1100" height="680" aria-label="Committed drawing"></canvas>
+      <canvas id="preview" width="1100" height="680" aria-label="Shared drawing surface"></canvas>
     </div>
+    <p id="feedback" role="status"></p><button id="retryBtn" hidden>Retry pending</button>
     <div class="canvas-footer">
       <span>Draw with mouse or touch</span>
       <span class="shortcuts"><kbd>P</kbd> pen <kbd>E</kbd> eraser <kbd>Ctrl+Z</kbd> undo</span>
@@ -323,139 +345,8 @@
   </div>
 </div>
 
-<script>
-  const canvas = document.getElementById('canvas');
-  const ctx = canvas.getContext('2d');
-
-  let drawing = false, lastX = 0, lastY = 0;
-  let color = '#1a1a1a', tool = 'draw', brushSize = 3;
-  let strokesSent = 0, reconnects = -1;
-  const myClientId = Math.random().toString(36).slice(2, 8);
-  const pendingStrokes = new Map();
-  let latencySamples = [], undoStack = [], strokeBatch = [], batchTimer = null;
-
-  document.getElementById('client-id').textContent = myClientId;
-
-  function setTool(t) {
-    tool = t;
-    document.getElementById('btn-pen').classList.toggle('active', t === 'draw');
-    document.getElementById('btn-eraser').classList.toggle('active', t === 'erase');
-    canvas.style.cursor = t === 'erase' ? 'cell' : 'crosshair';
-  }
-
-  document.getElementById('color-picker').addEventListener('input', function() {
-    color = this.value;
-    document.getElementById('color-hex').textContent = color;
-  });
-  document.getElementById('size-slider').addEventListener('input', function() {
-    brushSize = +this.value;
-    document.getElementById('size-val').textContent = brushSize;
-  });
-
-  document.addEventListener('keydown', (e) => {
-    if (e.target.tagName === 'INPUT') return;
-    if (e.key === 'p' || e.key === 'P') setTool('draw');
-    if (e.key === 'e' || e.key === 'E') setTool('erase');
-    if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); }
-  });
-
-  function drawStroke(s) {
-    ctx.save();
-    ctx.globalCompositeOperation = s.tool === 'erase' ? 'destination-out' : 'source-over';
-    ctx.beginPath();
-    ctx.moveTo(s.x0, s.y0);
-    ctx.lineTo(s.x1, s.y1);
-    ctx.strokeStyle = s.tool === 'erase' ? '#000' : (s.color || '#000');
-    ctx.lineWidth = Math.max(1, Number(s.width || 1));
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  function getPos(e) {
-    const r = canvas.getBoundingClientRect();
-    const t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
-    return t ? { x: t.clientX - r.left, y: t.clientY - r.top } : { x: e.clientX - r.left, y: e.clientY - r.top };
-  }
-
-  function saveUndo() { undoStack.push(ctx.getImageData(0, 0, canvas.width, canvas.height)); if (undoStack.length > 15) undoStack.shift(); }
-
-  function startDraw(e) { e.preventDefault(); saveUndo(); drawing = true; const p = getPos(e); lastX = p.x; lastY = p.y; }
-  function moveDraw(e) {
-    if (!drawing) return; e.preventDefault();
-    const p = getPos(e);
-    const stroke = { x0: lastX, y0: lastY, x1: p.x, y1: p.y, color, width: brushSize, tool, clientId: myClientId, strokeId: Math.random().toString(36).slice(2) };
-    drawStroke(stroke); queueStroke(stroke);
-    lastX = p.x; lastY = p.y;
-  }
-  function stopDraw() { drawing = false; }
-
-  canvas.addEventListener('mousedown', startDraw);
-  canvas.addEventListener('mousemove', moveDraw);
-  canvas.addEventListener('mouseup', stopDraw);
-  canvas.addEventListener('mouseleave', stopDraw);
-  canvas.addEventListener('touchstart', startDraw, { passive: false });
-  canvas.addEventListener('touchmove', moveDraw, { passive: false });
-  canvas.addEventListener('touchend', stopDraw, { passive: false });
-
-  function queueStroke(stroke) {
-    pendingStrokes.set(stroke.strokeId, Date.now());
-    strokeBatch.push(stroke);
-    if (!batchTimer) batchTimer = setTimeout(flushBatch, 16);
-    strokesSent++;
-    document.getElementById('st-strokes').textContent = strokesSent;
-  }
-  function flushBatch() {
-    batchTimer = null;
-    if (!strokeBatch.length) return;
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'strokes', strokes: strokeBatch }));
-    strokeBatch = [];
-  }
-
-  function undo() { if (undoStack.length) ctx.putImageData(undoStack.pop(), 0, 0); }
-  function clearLocal() { ctx.clearRect(0, 0, canvas.width, canvas.height); undoStack = []; }
-  function clearForEveryone() { clearLocal(); pendingStrokes.clear(); if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'clear' })); }
-  function exportPNG() { const a = document.createElement('a'); a.download = 'miniraft-whiteboard.png'; a.href = canvas.toDataURL(); a.click(); }
-
-  // ── WebSocket ──────────────────────────────────────
-  let ws = null;
-  function connect() {
-    reconnects++;
-    document.getElementById('st-reconnects').textContent = Math.max(0, reconnects);
-    ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
-
-    ws.onopen = () => setPill(true);
-    ws.onmessage = (e) => {
-      const msg = JSON.parse(e.data);
-      const apply = (s) => {
-        if (!s || s.x0 == null) return;
-        if (s.clientId !== myClientId) drawStroke(s);
-        if (s.clientId === myClientId && pendingStrokes.has(s.strokeId)) {
-          const rtt = Date.now() - pendingStrokes.get(s.strokeId);
-          pendingStrokes.delete(s.strokeId);
-          latencySamples.push(rtt); if (latencySamples.length > 20) latencySamples.shift();
-          document.getElementById('st-latency').textContent = Math.round(latencySamples.reduce((a,b)=>a+b,0)/latencySamples.length) + 'ms';
-        }
-      };
-      if (msg.type === 'stroke') apply(msg.stroke);
-      else if (msg.type === 'strokes') (msg.strokes||[]).forEach(apply);
-      else if (msg.type === 'full_log') { ctx.clearRect(0,0,canvas.width,canvas.height); undoStack=[]; (msg.log||[]).forEach(s => { if(s&&s.x0!=null) drawStroke(s); }); }
-      else if (msg.type === 'clear') { ctx.clearRect(0,0,canvas.width,canvas.height); undoStack=[]; pendingStrokes.clear(); }
-      else if (msg.type === 'leader_change' || msg.type === 'leader') {
-        document.getElementById('st-leader').textContent = msg.leader_id || '-';
-        document.getElementById('st-term').textContent = msg.term || '-';
-      }
-    };
-    ws.onclose = () => { setPill(false); setTimeout(connect, 2000); };
-    ws.onerror = () => {};
-  }
-  function setPill(on) {
-    const p = document.getElementById('conn-pill');
-    p.className = 'conn-pill ' + (on ? 'online' : 'offline');
-    document.getElementById('conn-text').textContent = on ? 'Connected' : 'Reconnecting';
-  }
-  connect();
-</script>
+<dialog id="clearDialog"><h2>Clear the shared board?</h2><p>This clears the drawing for everyone. It cannot be undone.</p><button id="cancelClear" autofocus>Cancel</button><button id="confirmClear">Clear board</button></dialog>
+<script src="/boardState.js"></script>
+<script src="/board.js"></script>
 </body>
 </html>
