@@ -55,6 +55,14 @@ function broadcast(msg) {
   metrics.totalBroadcasts++;
 }
 
+function clusterState() {
+  const leader = replicas.find(node => node.url === currentLeader && node.role === 'leader');
+  const commitIndex = leader?.commit_index ?? Math.max(-1, ...replicas.filter(node => node.online).map(node => node.commit_index));
+  return { leaderId: leader?.id || null, term: leader?.term ?? null, commitIndex,
+    onlineCount: replicas.filter(node => node.online).length, hasQuorum: Boolean(leader?.hasQuorum),
+    recovering: replicas.some(node => node.online && node.commit_index < commitIndex) };
+}
+
 function refreshCluster() {
   if (refreshing) return refreshing;
   refreshing = (async () => {
@@ -70,6 +78,7 @@ function refreshCluster() {
       addLog(leader ? `${leader.id} elected in term ${leader.term}` : 'Waiting for a leader', 'election');
       broadcast({ type: 'leader_change', leader_id: leader?.id || null, term: leader?.term || null });
     }
+    broadcast({ type: 'cluster', ...clusterState() });
   })().finally(() => { refreshing = null; });
   return refreshing;
 }
@@ -188,7 +197,7 @@ app.get('/status', (req, res) => res.json({
 }));
 app.get('/dashboard-data', (req, res) => res.json({
   connectedClients: clients.size, currentLeader, metrics, replicas,
-  pendingStrokes: pendingOps.size, eventLog,
+  pendingStrokes: pendingOps.size, eventLog, cluster: clusterState(), lastIndex,
 }));
 
 wss.on('connection', async ws => {
@@ -218,6 +227,7 @@ wss.on('connection', async ws => {
   await syncCommits();
   send(ws, { type: 'full_log', log: boardLog });
   send(ws, { type: 'leader', leader_id: currentLeader ? new URL(currentLeader).hostname : null, term: currentLeader ? leaderTerm : null });
+  send(ws, { type: 'cluster', ...clusterState() });
   ws.ready = true;
 });
 

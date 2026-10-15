@@ -1,352 +1,56 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MiniRAFT Collaborative Whiteboard</title>
-  <meta name="description" content="Real-time collaborative drawing board powered by Mini-RAFT consensus">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <style>
-    :root {
-      --bg: #fafafa;
-      --surface: #ffffff;
-      --surface-hover: #f5f5f5;
-      --border: #e8e8e8;
-      --border-light: #f0f0f0;
-      --text: #1a1a1a;
-      --text-secondary: #888;
-      --text-muted: #bbb;
-      --accent: #1a1a1a;
-      --accent-soft: rgba(0,0,0,0.06);
-      --green: #22c55e;
-      --green-bg: rgba(34,197,94,0.08);
-      --red: #ef4444;
-      --red-bg: rgba(239,68,68,0.08);
-      --shadow-sm: 0 1px 3px rgba(0,0,0,0.04);
-      --shadow-md: 0 4px 16px rgba(0,0,0,0.06);
-      --shadow-lg: 0 8px 32px rgba(0,0,0,0.08);
-      --radius: 12px;
-      --radius-sm: 8px;
-      --transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-
-    body {
-      font-family: 'Inter', -apple-system, system-ui, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      height: 100vh;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      -webkit-font-smoothing: antialiased;
-    }
-
-    /* ── Header ────────────────────── */
-    header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0 28px;
-      height: 56px;
-      background: var(--surface);
-      border-bottom: 1px solid var(--border);
-      flex-shrink: 0;
-      z-index: 10;
-    }
-    .logo-group { display: flex; align-items: center; gap: 12px; }
-    .logo-icon {
-      width: 32px; height: 32px;
-      background: var(--text);
-      border-radius: 8px;
-      display: flex; align-items: center; justify-content: center;
-      color: #fff; font-weight: 700; font-size: 14px;
-      letter-spacing: -0.5px;
-    }
-    header h1 { font-size: 15px; font-weight: 600; letter-spacing: -0.3px; color: var(--text); }
-    header .subtitle { font-size: 11px; color: var(--text-secondary); font-weight: 400; margin-top: 1px; }
-
-    .header-right { display: flex; align-items: center; gap: 16px; }
-    .nav-link {
-      font-size: 12px; font-weight: 500; color: var(--text-secondary);
-      text-decoration: none; padding: 6px 12px; border-radius: 6px;
-      transition: all var(--transition);
-    }
-    .nav-link:hover { color: var(--text); background: var(--accent-soft); }
-
-    .conn-pill {
-      display: flex; align-items: center; gap: 6px;
-      padding: 5px 14px; border-radius: 100px;
-      font-size: 11px; font-weight: 500;
-      transition: all 0.4s ease;
-      border: 1px solid transparent;
-    }
-    .conn-pill.online { background: var(--green-bg); color: #16a34a; border-color: rgba(34,197,94,0.15); }
-    .conn-pill.offline { background: var(--red-bg); color: var(--red); border-color: rgba(239,68,68,0.15); }
-    .conn-dot {
-      width: 6px; height: 6px; border-radius: 50%;
-      position: relative;
-    }
-    .conn-pill.online .conn-dot { background: var(--green); }
-    .conn-pill.offline .conn-dot { background: var(--red); }
-    .conn-pill.online .conn-dot::after {
-      content: ''; position: absolute; inset: -3px;
-      border-radius: 50%; background: var(--green);
-      opacity: 0; animation: ping 2s cubic-bezier(0,0,0.2,1) infinite;
-    }
-    @keyframes ping { 0% { opacity: 0.6; transform: scale(1); } 100% { opacity: 0; transform: scale(2.5); } }
-
-    /* ── Main layout ──────────────── */
-    .main { display: flex; flex: 1; overflow: hidden; }
-
-    /* ── Sidebar ──────────────────── */
-    .sidebar {
-      width: 220px; flex-shrink: 0;
-      padding: 16px;
-      overflow-y: auto;
-      background: var(--surface);
-      border-right: 1px solid var(--border);
-      display: flex; flex-direction: column; gap: 2px;
-    }
-    .sidebar::-webkit-scrollbar { width: 0; }
-
-    .section-label {
-      font-size: 10px; font-weight: 600;
-      text-transform: uppercase; letter-spacing: 1.2px;
-      color: var(--text-muted); padding: 12px 8px 8px;
-    }
-
-    /* Tool buttons */
-    .tool-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 0 4px; }
-    .tool-btn {
-      padding: 10px 0; border: none; background: transparent;
-      border-radius: var(--radius-sm); font-size: 12px; font-weight: 500;
-      color: var(--text-secondary); cursor: pointer;
-      transition: all var(--transition);
-      font-family: inherit; display: flex; flex-direction: column;
-      align-items: center; gap: 4px;
-    }
-    .tool-btn svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; }
-    .tool-btn:hover { background: var(--accent-soft); color: var(--text); }
-    .tool-btn.active { background: var(--text); color: #fff; }
-
-    /* Color picker */
-    .color-section { padding: 4px 8px; }
-    .color-row { display: flex; align-items: center; gap: 8px; }
-    #color-picker {
-      width: 32px; height: 32px; border: 2px solid var(--border);
-      border-radius: 8px; cursor: pointer; padding: 2px;
-      background: transparent; transition: border-color var(--transition);
-    }
-    #color-picker:hover { border-color: var(--text-muted); }
-    #color-picker::-webkit-color-swatch-wrapper { padding: 0; }
-    #color-picker::-webkit-color-swatch { border: none; border-radius: 4px; }
-    .color-hex {
-      font-family: 'JetBrains Mono', monospace; font-size: 11px;
-      color: var(--text-muted); font-weight: 400;
-    }
-
-    /* Size slider */
-    .size-section { padding: 4px 8px; }
-    .size-row { display: flex; align-items: center; gap: 10px; }
-    #size-slider {
-      flex: 1; height: 4px; -webkit-appearance: none; appearance: none;
-      background: var(--border); border-radius: 2px; outline: none;
-      transition: background var(--transition);
-    }
-    #size-slider:hover { background: var(--text-muted); }
-    #size-slider::-webkit-slider-thumb {
-      -webkit-appearance: none; width: 14px; height: 14px;
-      background: var(--text); border-radius: 50%; cursor: pointer;
-      transition: transform var(--transition);
-    }
-    #size-slider::-webkit-slider-thumb:hover { transform: scale(1.2); }
-    #size-val {
-      font-family: 'JetBrains Mono', monospace; font-size: 11px;
-      color: var(--text-muted); min-width: 28px; text-align: right;
-    }
-
-    /* Action buttons */
-    .action-list { padding: 0 4px; display: flex; flex-direction: column; gap: 2px; }
-    .act-btn {
-      padding: 8px 12px; border: none; background: transparent;
-      border-radius: var(--radius-sm); font-size: 12px; font-weight: 500;
-      color: var(--text-secondary); cursor: pointer; text-align: left;
-      transition: all var(--transition); font-family: inherit;
-    }
-    .act-btn:hover { background: var(--accent-soft); color: var(--text); }
-    .act-btn.danger { color: var(--red); }
-    .act-btn.danger:hover { background: var(--red-bg); }
-
-    .divider { height: 1px; background: var(--border-light); margin: 4px 8px; }
-
-    /* Session stats */
-    .stat-list { padding: 0 8px; }
-    .stat-row {
-      display: flex; justify-content: space-between; align-items: center;
-      padding: 6px 0; font-size: 11px;
-    }
-    .stat-label { color: var(--text-muted); font-weight: 500; }
-    .stat-value {
-      font-family: 'JetBrains Mono', monospace; font-weight: 500;
-      font-size: 11px; color: var(--text);
-    }
-    .client-chip {
-      display: flex; align-items: center; gap: 6px; margin-top: 8px;
-      padding: 6px 10px; background: var(--accent-soft);
-      border-radius: 6px; font-size: 10px; color: var(--text-secondary);
-      font-family: 'JetBrains Mono', monospace;
-    }
-    .client-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
-
-    /* ── Canvas area ─────────────── */
-    .canvas-wrap {
-      flex: 1; display: flex; flex-direction: column;
-      align-items: center; justify-content: center;
-      padding: 24px; overflow: hidden; background: var(--bg);
-    }
-    .canvas-container {
-      border-radius: var(--radius);
-      background: #fff;
-      box-shadow: var(--shadow-lg);
-      overflow: hidden;
-      position: relative;
-      animation: canvasIn 0.6s cubic-bezier(0.16, 1, 0.3, 1);
-    }
-    @keyframes canvasIn {
-      from { opacity: 0; transform: scale(0.97) translateY(8px); }
-      to { opacity: 1; transform: scale(1) translateY(0); }
-    }
-    canvas { display: block; cursor: crosshair; background: #fff; }
-
-    .canvas-footer {
-      text-align: center; margin-top: 16px;
-      font-size: 11px; color: var(--text-muted);
-      display: flex; align-items: center; gap: 16px; justify-content: center;
-      animation: fadeUp 0.8s ease 0.3s both;
-    }
-    @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-    kbd {
-      display: inline-block; padding: 2px 6px;
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: 4px; font-size: 10px; font-weight: 500;
-      font-family: 'JetBrains Mono', monospace; color: var(--text-secondary);
-    }
-    .shortcuts { display: flex; gap: 4px; align-items: center; }
-    .canvas-container { width: 100%; max-width: 1100px; }
-    canvas { width: 100%; height: auto; background: #f4f1e9; }
-    #preview { position: absolute; inset: 0; background: transparent; touch-action: none; }
-    #feedback { margin-top: 12px; font-size: 12px; }
-    button:disabled { opacity: .4; cursor: default; }
-    dialog { margin: auto; padding: 24px; border: 1px solid #888; border-radius: 8px; max-width: calc(100% - 32px); }
-    dialog p { margin: 12px 0; }
-    dialog button { padding: 10px 14px; }
-    @media (max-width: 700px) {
-      body { height: auto; min-height: 100dvh; overflow: auto; }
-      header { padding: 0 12px; }
-      .main { flex-direction: column; }
-      .sidebar { width: 100%; display: grid; grid-template-columns: 1fr 1fr; }
-      .sidebar .divider, .sidebar .section-label { display: none; }
-      .canvas-wrap { padding: 12px; }
-      .canvas-footer .shortcuts { display: none; }
-    }
-    @media (prefers-reduced-motion: reduce) { *, *::after { animation: none !important; transition: none !important; } }
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MiniRAFT | Shared board</title>
+  <meta name="description" content="A shared drawing board with three MiniRAFT replicas.">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/boardState.js" defer></script>
+  <script src="/board.js" defer></script>
 </head>
 <body>
-
-<header>
-  <div class="logo-group">
-    <div class="logo-icon">R</div>
-    <div>
-      <h1>MiniRAFT</h1>
-      <div class="subtitle">Collaborative Whiteboard</div>
+  <a class="skipLink" href="#workspace">Skip to board</a>
+  <header class="siteHeader">
+    <a class="brand" href="/" aria-label="MiniRAFT home"><img src="/favicon.svg" width="32" height="32" alt=""><span>MiniRAFT<small>Distributed drawing board</small></span></a>
+    <nav aria-label="Main navigation"><a href="/" aria-current="page">Board</a><a href="/dashboard">Cluster</a></nav>
+    <span id="connPill" class="connPill offline"><span id="connText">Connecting</span></span>
+  </header>
+  <main id="workspace" class="page">
+    <div class="pageHeading"><div><p class="eyebrow">Workspace / 01</p><h1>Shared board</h1></div><p id="clusterHint" class="clusterHint" role="status">Checking the cluster</p></div>
+    <div class="boardLayout">
+      <aside class="toolPanel" aria-label="Drawing controls">
+        <div class="toolGroup"><h2>Tools</h2><div class="toolSwitch">
+          <button id="penBtn" class="active" aria-pressed="true" title="Pen (P)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 16-1 4 4-1L20 7l-3-3L5 16Zm9-9 3 3"/></svg>Pen</button>
+          <button id="eraserBtn" aria-pressed="false" title="Eraser (E)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 14 9-10 7 6-9 10H8l-4-4v-2Zm5-5 7 6M11 20h10"/></svg>Eraser</button>
+        </div></div>
+        <div class="toolGroup inkControls">
+          <div class="colorRow"><label for="colorPicker">Ink</label><input type="color" id="colorPicker" value="#272723"><span id="colorHex" class="mono">#272723</span></div>
+          <div class="sizeLabel"><label for="sizeSlider">Width</label><output id="sizeVal" for="sizeSlider">3</output></div>
+          <input type="range" id="sizeSlider" min="1" max="20" value="3">
+        </div>
+        <div class="toolGroup actions"><h2>Your changes</h2><div class="historyButtons"><button id="undoBtn" title="Undo (Ctrl or Cmd + Z)" disabled>Undo</button><button id="redoBtn" title="Redo (Ctrl or Cmd + Shift + Z)" disabled>Redo</button></div><button id="exportBtn" title="Download the committed board">Export PNG</button><button id="clearBtn" class="danger">Clear board</button></div>
+        <p class="toolNote">Undo affects your own marks.<br>Clear affects everyone.</p>
+      </aside>
+      <section class="boardPanel" aria-label="Drawing board">
+        <div class="boardCaption"><span>Canvas</span><span class="mono">1100 x 680</span></div>
+        <div class="canvasContainer">
+          <canvas id="canvas" width="1100" height="680" aria-label="Committed drawing"></canvas>
+          <canvas id="preview" width="1100" height="680" aria-label="Shared drawing surface, use a mouse or touch"></canvas>
+          <div id="emptyBoard" class="emptyBoard"><span>Make your first mark.</span><small>Open a second tab to draw together.</small></div>
+        </div>
+        <div class="boardFeedback"><p id="feedback" role="status">Connecting to the board.</p><button id="retryBtn" hidden>Retry pending</button></div>
+        <div class="boardFooter"><span>Mouse, pen or touch</span><span><kbd>P</kbd> pen <kbd>E</kbd> eraser <kbd>Ctrl Z</kbd> undo</span></div>
+      </section>
     </div>
-  </div>
-  <div class="header-right">
-    <a href="/dashboard" class="nav-link">Dashboard →</a>
-    <div id="conn-pill" class="conn-pill offline">
-      <span class="conn-dot"></span>
-      <span id="conn-text">Connecting</span>
-    </div>
-  </div>
-</header>
-
-<div class="main">
-  <aside class="sidebar">
-
-    <div class="section-label">Tools</div>
-    <div class="tool-grid">
-      <button id="btn-pen" class="tool-btn active" onclick="setTool('draw')">
-        <svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-        Pen
-      </button>
-      <button id="btn-eraser" class="tool-btn" onclick="setTool('erase')">
-        <svg viewBox="0 0 24 24"><path d="M20 20H7L3 16c-.8-.8-.8-2 0-2.8L14.8 1.4c.8-.8 2-.8 2.8 0l5 5c.8.8.8 2 0 2.8L11 20"/></svg>
-        Eraser
-      </button>
-    </div>
-
-    <div class="divider"></div>
-    <div class="section-label">Color</div>
-    <div class="color-section">
-      <div class="color-row">
-        <input type="color" id="color-picker" value="#1a1a1a">
-        <span class="color-hex" id="color-hex">#1a1a1a</span>
-      </div>
-    </div>
-
-    <div class="section-label">Size</div>
-    <div class="size-section">
-      <div class="size-row">
-        <input type="range" id="size-slider" min="1" max="20" value="3">
-        <span id="size-val">3</span>
-      </div>
-    </div>
-
-    <div class="divider"></div>
-    <div class="section-label">Actions</div>
-    <div class="action-list">
-      <button id="undoBtn" class="act-btn" onclick="undo()">Undo</button>
-      <button id="redoBtn" class="act-btn" onclick="redo()">Redo</button>
-      <button class="act-btn danger" onclick="clearForEveryone()">Clear Everyone</button>
-      <button class="act-btn" onclick="exportPNG()">↓ Export PNG</button>
-    </div>
-
-    <div class="divider"></div>
-    <div class="section-label">Session</div>
-    <div class="stat-list">
-      <div class="stat-row"><span class="stat-label">Leader</span><span class="stat-value" id="st-leader">-</span></div>
-      <div class="stat-row"><span class="stat-label">Term</span><span class="stat-value" id="st-term">-</span></div>
-      <div class="stat-row"><span class="stat-label">Strokes</span><span class="stat-value" id="st-strokes">0</span></div>
-      <div class="stat-row"><span class="stat-label">Latency</span><span class="stat-value" id="st-latency">-</span></div>
-      <div class="stat-row"><span class="stat-label">Reconnects</span><span class="stat-value" id="st-reconnects">0</span></div>
-      <div class="stat-row"><span class="stat-label">Pending</span><span class="stat-value" id="st-pending">0</span></div>
-      <div class="client-chip">
-        <span class="dot"></span>
-        <span id="client-id"></span>
-      </div>
-    </div>
-
-  </aside>
-
-  <div class="canvas-wrap">
-    <div class="canvas-container">
-      <canvas id="canvas" width="1100" height="680" aria-label="Committed drawing"></canvas>
-      <canvas id="preview" width="1100" height="680" aria-label="Shared drawing surface"></canvas>
-    </div>
-    <p id="feedback" role="status"></p><button id="retryBtn" hidden>Retry pending</button>
-    <div class="canvas-footer">
-      <span>Draw with mouse or touch</span>
-      <span class="shortcuts"><kbd>P</kbd> pen <kbd>E</kbd> eraser <kbd>Ctrl+Z</kbd> undo</span>
-    </div>
-  </div>
-</div>
-
-<dialog id="clearDialog"><h2>Clear the shared board?</h2><p>This clears the drawing for everyone. It cannot be undone.</p><button id="cancelClear" autofocus>Cancel</button><button id="confirmClear">Clear board</button></dialog>
-<script src="/boardState.js"></script>
-<script src="/board.js"></script>
+    <dl class="sessionStats" aria-label="This session">
+      <div><dt>Leader</dt><dd id="stLeader">-</dd></div><div><dt>Term</dt><dd id="stTerm">-</dd></div>
+      <div><dt>Visible segments</dt><dd id="stStrokes">0</dd></div><div><dt>Pending</dt><dd id="stPending">0</dd></div>
+      <div><dt>Last commit</dt><dd id="stLatency">-</dd></div><div><dt>Reconnects</dt><dd id="stReconnects">0</dd></div><div><dt>Your tab</dt><dd id="clientId">-</dd></div>
+    </dl>
+    <footer class="pageFooter"><span>MiniRAFT / a cloud computing project</span><span>In-memory session</span></footer>
+  </main>
+  <dialog id="clearDialog" aria-labelledby="clearTitle" aria-describedby="clearNote"><h2 id="clearTitle">Clear the shared board?</h2><p id="clearNote">This clears the drawing for everyone. It cannot be undone.</p><div class="dialogActions"><button id="cancelClear" autofocus>Cancel</button><button id="confirmClear" class="danger">Clear board</button></div></dialog>
 </body>
 </html>

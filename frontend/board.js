@@ -5,23 +5,24 @@ const preview = el('preview');
 const previewCtx = preview.getContext('2d');
 const myClientId = sessionStorage.getItem('clientId') || crypto.randomUUID();
 sessionStorage.setItem('clientId', myClientId);
-el('client-id').textContent = myClientId.slice(0, 8);
+el('clientId').textContent = myClientId.slice(0, 8);
 const pendingOps = new Map();
 let log = [];
 let state = boardState(log, myClientId);
 let ws;
 let ready = false;
 let tool = 'draw';
-let color = '#1a1a1a';
+let color = '#272723';
 let brushSize = 3;
 let gesture = null;
 let reconnects = -1;
 let renderFrame = null;
 let notice = '';
+let cluster = null;
 
 function setTool(next) {
   tool = next;
-  for (const [id, value] of [['btn-pen', 'draw'], ['btn-eraser', 'erase']]) {
+  for (const [id, value] of [['penBtn', 'draw'], ['eraserBtn', 'erase']]) {
     el(id).classList.toggle('active', tool === value);
     el(id).setAttribute('aria-pressed', tool === value);
   }
@@ -50,6 +51,7 @@ function drawStroke(target, op, pending = false) {
 function render() {
   renderFrame = null;
   state = boardState(log, myClientId);
+  el('emptyBoard').hidden = log.length > 0 || pendingOps.size > 0;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   state.strokes.forEach(op => drawStroke(ctx, op));
   previewCtx.clearRect(0, 0, preview.width, preview.height);
@@ -57,9 +59,10 @@ function render() {
   el('undoBtn').disabled = pendingOps.size > 0 || !state.undoId;
   el('redoBtn').disabled = pendingOps.size > 0 || !state.redoId;
   el('retryBtn').hidden = ![...pendingOps.values()].some(item => item.failed);
-  el('st-strokes').textContent = state.strokes.length;
-  el('st-pending').textContent = pendingOps.size;
-  el('feedback').textContent = notice || (pendingOps.size ? `${pendingOps.size} pending. Dotted marks are waiting for a commit.` : 'All changes committed.');
+  el('stStrokes').textContent = state.strokes.length;
+  el('stPending').textContent = pendingOps.size;
+  el('clusterHint').textContent = !ready ? 'Reconnecting. Your pending marks stay in this tab.' : cluster?.hasQuorum ? `${cluster.onlineCount} of 3 replicas online. Ready to commit.` : 'Waiting for a majority. New marks stay pending.';
+  el('feedback').textContent = notice || (!ready ? 'Connecting to the board.' : pendingOps.size ? `${pendingOps.size} pending. Dotted marks are waiting for a commit.` : 'All changes committed.');
 }
 
 function scheduleRender() {
@@ -76,7 +79,11 @@ function queueOp(op) {
 
 function flushPending() {
   if (!ready || ws.readyState !== WebSocket.OPEN) return;
-  const items = [...pendingOps.values()].filter(item => !item.failed && Date.now() - item.sentAt > 2000);
+  const items = [];
+  for (const item of pendingOps.values()) {
+    if (item.failed) break;
+    if (Date.now() - item.sentAt > 2000) items.push(item);
+  }
   for (let idx = 0; idx < items.length; idx += 64) {
     const batch = items.slice(idx, idx + 64);
     ws.send(JSON.stringify({ type: 'ops', strokes: batch.map(item => item.op) }));
@@ -138,10 +145,10 @@ function exportPNG() {
   const link = document.createElement('a');
   link.download = 'miniraft-board.png'; link.href = out.toDataURL(); link.click();
 }
-el('color-picker').oninput = e => { color = e.target.value; el('color-hex').textContent = color; };
-el('size-slider').oninput = e => { brushSize = Number(e.target.value); el('size-val').textContent = brushSize; };
+el('colorPicker').oninput = e => { color = e.target.value; el('colorHex').textContent = color; };
+el('sizeSlider').oninput = e => { brushSize = Number(e.target.value); el('sizeVal').textContent = brushSize; };
 document.addEventListener('keydown', e => {
-  if (['INPUT', 'TEXTAREA', 'BUTTON'].includes(e.target.tagName) || el('clearDialog').open) return;
+  if (['INPUT', 'TEXTAREA'].includes(e.target.tagName) || el('clearDialog').open) return;
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
   else if (!e.ctrlKey && !e.metaKey) {
     if (e.key.toLowerCase() === 'p') setTool('draw');
@@ -157,33 +164,36 @@ function connect() {
     if (msg.type === 'full_log') {
       log = msg.log; ready = true;
       reconnects++;
-      el('st-reconnects').textContent = reconnects;
-      el('conn-pill').className = 'conn-pill online';
-      el('conn-text').textContent = 'Connected';
+      el('stReconnects').textContent = reconnects;
+      el('connPill').className = 'connPill online';
+      el('connText').textContent = 'Connected';
       for (const item of pendingOps.values()) item.sentAt = 0;
       flushPending();
+    } else if (msg.type === 'cluster') {
+      cluster = msg;
     } else if (msg.type === 'stroke') {
       log.push(msg.stroke);
     } else if (msg.type === 'clear') {
       log = [];
     } else if (msg.type === 'ack' && msg.clientId === myClientId) {
       const item = pendingOps.get(msg.strokeId);
-      if (item) el('st-latency').textContent = `${Date.now() - item.at} ms`;
+      if (item) el('stLatency').textContent = `${Date.now() - item.at} ms`;
       pendingOps.delete(msg.strokeId);
       if (!pendingOps.size) notice = '';
     } else if (msg.type === 'unconfirmed' || msg.type === 'error') {
       notice = msg.error;
       for (const [id, item] of pendingOps) if (!msg.strokeId || id === msg.strokeId) item.failed = true;
     } else if (msg.type === 'leader_change' || msg.type === 'leader') {
-      el('st-leader').textContent = msg.leader_id || 'Electing';
-      el('st-term').textContent = msg.term ?? '-';
+      el('stLeader').textContent = msg.leader_id || 'Electing';
+      el('stTerm').textContent = msg.term ?? '-';
     }
     scheduleRender();
   };
   ws.onclose = () => {
     ready = false;
-    el('conn-pill').className = 'conn-pill offline';
-    el('conn-text').textContent = 'Reconnecting';
+    el('connPill').className = 'connPill offline';
+    el('connText').textContent = 'Reconnecting';
+    scheduleRender();
     setTimeout(connect, 1000);
   };
   ws.onerror = () => {};
@@ -196,5 +206,11 @@ setInterval(() => {
   }
   flushPending();
 }, 50);
+el('penBtn').onclick = () => setTool('draw');
+el('eraserBtn').onclick = () => setTool('erase');
+el('undoBtn').onclick = undo;
+el('redoBtn').onclick = redo;
+el('clearBtn').onclick = clearForEveryone;
+el('exportBtn').onclick = exportPNG;
 connect();
 render();
