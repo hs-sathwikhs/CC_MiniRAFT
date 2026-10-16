@@ -1,371 +1,94 @@
-# Architecture Document - MiniRAFT Distributed Drawing Board
+# MiniRAFT notes
 
-## 1. System Overview
+This follows the three-replica drawing board in [MiniRAFT.pdf](MiniRAFT.pdf), including the optional shared undo/redo. It is a small consensus exercise, not a production Raft library.
 
-The system is a fault-tolerant collaborative whiteboard that enables real-time drawing across multiple browser clients. It uses a **Mini-RAFT consensus protocol** to ensure all 3 backend replica nodes maintain identical stroke logs, even during node failures and restarts.
+## The path of a drawing
 
-### 1.1 Cluster Diagram
-
-```
-                    ┌──────────────────────────────┐
-                    │        Browser Clients       │
-                    │  (HTML5 Canvas + WebSocket)  │
-                    └──────────────┬───────────────┘
-                                   │ ws://host:8080/ws
-                    ┌──────────────▼────────────────┐
-                    │     Nginx Frontend (:8080)    │
-                    │  Static HTML │ WS proxy │ API │
-                    └──────┬───────┴────┬───────────┘
-                           │            │
-                      /ws  │    /api/*  │
-                           │            │
-                    ┌──────▼────────────▼───────────┐
-                    │    Gateway Service (:3000)    │
-                    │  WebSocket Hub │ Leader Route │
-                    │  Stroke Batcher│ Dashboard API│
-                    └──────┬────────────────────────┘
-                           │
-              POST /strokes (to leader)
-              POST /commit-batch (from leader)
-              POST /notify-leader (on election)
-                           │
-            ┌──────────────┼──────────────┐
-            │              │              │
-     ┌──────▼─────┐  ┌─────▼──────┐  ┌─────▼──────┐
-     │ Replica 1   │ │ Replica 2   │ │ Replica 3   │
-     │ :4001       │ │ :4002       │ │ :4003       │
-     │             │ │             │ │             │
-     │ Role: L/F/C │ │ Role: L/F/C │ │ Role: L/F/C │
-     │ Term: N     │ │ Term: N     │ │ Term: N     │
-     │ Log: [...]  │ │ Log: [...]  │ │ Log: [...]  │
-     └──────┬──────┘ └──────┬──────┘ └──────┬──────┘
-            │               │               │
-            └───────────────┴───────────────┘
-               AppendEntries / RequestVote
-               (HTTP POST between replicas)
+```mermaid
+flowchart LR
+    B[Browser tabs] <-->|WebSocket| N[Nginx :8080]
+    N <--> G[Gateway :3000]
+    G -->|operations| L[Leader]
+    L <-->|AppendEntries| F1[Follower]
+    L <-->|AppendEntries| F2[Follower]
+    G -->|read committed log| L
 ```
 
-### 1.2 Service Responsibilities
+`frontend/board.js` scales pointer positions into a fixed 1100 x 680 canvas. Segments in one gesture share a `drawId`. Uncommitted marks use a separate preview canvas, so a local preview cannot change the shared drawing order. PNG export includes only the committed canvas and its paper background.
 
-| Service | Technology | Role |
-|---------|-----------|------|
-| **Frontend** | Nginx Alpine | Serves `index.html` (whiteboard) and `dashboard.html` (monitoring). Proxies WebSocket (`/ws`) and REST (`/api/*`) to the Gateway. |
-| **Gateway** | Node.js + Express + ws | Manages browser WebSocket connections. Batches incoming strokes and forwards them to the RAFT leader. Broadcasts committed strokes to all clients. Provides cluster monitoring API. |
-| **Replica ×3** | Node.js + Express + axios | Implements Mini-RAFT consensus. Maintains append-only stroke log. Participates in leader election, log replication, and majority commit. |
+`gateway/server.js` keeps browser connections open while it looks for a leader. It polls replica status every 400ms, sends at most 64 operations per batch and reads committed log pages every 150ms. Leader notifications trigger another read; the gateway never inserts the notification body into its board cache. A new tab gets a replay followed by live operations.
 
----
+`replica/server.js` is shared by all three nodes. Each entry is `{term, data}`. The leader tracks each follower's matched index separately, so a slow or stopped follower does not hold up the other one. A successful write response means accepted by the leader, not committed. Browser acknowledgements are sent only after the gateway reads the committed entry.
 
-## 2. Mini-RAFT Protocol Design
+## Elections and recovery
 
-### 2.1 State Transition Diagram
-
-```
-                  ┌─────────────────────────────────────────┐
-                  │                                         │
-                  │    ┌──────────┐                         │
-                  │    │ FOLLOWER │ ◄───────────────────────┤
-                  │    └────┬─────┘                         │
-                  │         │                               │
-                  │  election timeout                       │
-                  │  (1500-3000ms, no heartbeat received)   │
-                  │         │                               │
-                  │    ┌────▼──────┐                        │
-                  │    │ CANDIDATE │                        │
-                  │    └────┬──────┘                        │
-                  │         │                               │
-                  │    ┌────┴────┐                          │
-                  │    │         │                          │
-                  │  majority  split vote                   │
-                  │  votes      (retry with backoff)        │
-                  │    │         │                          │
-                  │    │    back to FOLLOWER ───────────────┤
-                  │    │                                    │
-                  │  ┌─▼──────┐                             │
-                  │  │ LEADER │                             │
-                  │  └────────┘                             │
-                  │       │                                 │
-                  │  discovers higher term ─────────────────┘
-                  │
-                  └──────────────────────────────────────────
+```mermaid
+stateDiagram-v2
+    [*] --> Follower
+    Follower --> Candidate: election timeout
+    Candidate --> Candidate: retry election
+    Candidate --> Leader: two votes
+    Candidate --> Follower: current leader or higher term
+    Leader --> Follower: higher term
 ```
 
-### 2.2 Election Rules
+Followers start an election after a random 500-800ms without a valid leader message. A candidate increments its term, votes for itself and asks its peers. A node grants one vote per term while running, and only to a candidate whose log is at least as up to date. Two votes elect a leader. Leaders send heartbeats every 150ms; replica RPCs time out after 250ms.
 
-1. Each node starts as a **Follower** with a random election timeout (1500-3000ms).
-2. Timeout is staggered by replica ID: `base + (ID % 3) × 100ms + random(0, 1500ms)`.
-3. If a follower does not receive a heartbeat (AppendEntries) before its timer expires, it becomes a **Candidate**.
-4. The candidate increments its `term`, votes for itself, and sends `RequestVote` RPCs to all peers.
-5. A node grants a vote if: (a) the candidate's term ≥ its own, (b) it hasn't voted in this term, and (c) the candidate's log is at least as up-to-date.
-6. If the candidate receives votes from a **majority (≥2 of 3)**, it immediately becomes **Leader** (early promotion - doesn't wait for all responses).
-7. On becoming leader, it immediately sends an AppendEntries heartbeat (awaited) to suppress other elections.
-8. If a split vote occurs, nodes retry with exponential random backoff.
+A higher term makes a node step down. Delayed RPC replies cannot move the term backwards. The leader advances its commit index when an entry from its current term has reached a majority. Each new leader appends a no-op entry so earlier entries can also finish committing. No-ops count toward log indexes but do not draw anything.
 
-### 2.3 Log Replication Rules
+AppendEntries checks the preceding index and term before accepting entries. Conflicting uncommitted entries can be replaced; the committed prefix is protected. A restarted follower has an empty log and requests committed pages from the leader's `/sync-log` endpoint. Each page has up to 64 entries. Normal replication handles the remaining tail.
 
-```
-  Client Stroke
-       │
-       ▼
-  Gateway batches stroke(s)
-       │
-       ▼  POST /strokes
-  Leader appends to raftLog[]
-       │
-       ├──────────────────────┐
-       ▼ POST /append-entries  ▼ POST /append-entries
-   Follower 1              Follower 2
-       │                       │
-       └────── ACK ────────────┘
-                │
-       majority reached (2/3)
-                │
-       Leader advances commitIndex
-                │
-       Leader POST /commit-batch → Gateway
-                │
-       Gateway broadcasts to all WebSocket clients
-```
+| Situation | Result |
+| --- | --- |
+| One follower stops | The leader and other follower still commit. |
+| Leader stops | The two followers elect a replacement. Commits pause briefly; browser connections stay open. |
+| A stopped node returns | It catches up before the next failure demo. |
+| Two nodes stop | No new majority commits. Marks stay pending, then show unconfirmed feedback. |
+| Gateway restarts | Tabs reconnect, resend pending operations and replay the committed log. |
+| Whole stack stops | All in-memory state is lost. Start a fresh session. |
 
-**Safety Rules:**
-- Committed entries are never overwritten
-- Higher term always wins (leader steps down if it sees a higher term)
-- Entries are only committed if they belong to the current term
-- A vote is granted at most once per term
+## Retries and undo
 
-### 2.4 Catch-Up Protocol (Restarted Nodes)
+Each operation has a `clientId` and `strokeId`. Replicas deduplicate these IDs, including after a follower catches up. Reusing an ID with different content is rejected. The gateway keeps its committed-ID cache across clear operations, so retrying an old mark cannot restore a cleared drawing.
 
-1. Restarted node starts as Follower with an empty log
-2. On first `AppendEntries` from leader, `prevLogIndex` check fails
-3. Follower returns `{success: false, conflict_index: currentLogLength}`
-4. Follower calls `POST /sync-log` on the leader with `from_index`
-5. Leader responds with all committed entries from that index onward
-6. Follower appends missing entries, updates `commitIndex`, and resumes normal replication
+The gateway holds at most 4096 pending operations; each browser holds at most 1024. Gateway retries use the same IDs about every 700ms. A write without a confirmed commit after 15 seconds is reported as unconfirmed. This is not a promise that an already accepted entry can never commit later. The browser keeps unconfirmed operations for an explicit retry and resends still-pending ones after reconnecting. Closing or reloading a tab can lose its unsent marks.
 
----
+Undo and redo are operations targeting a `drawId` within that client's identity. `frontend/boardState.js` replays them to decide which gestures are visible. Undo also works for erasing. Clear resets the visible board and undo history for everyone. Client IDs group edits; they are not authenticated user accounts.
 
-## 3. API Specification
+## Useful endpoints
 
-### 3.1 Replica RPC Endpoints
+| Service | Endpoint | Purpose |
+| --- | --- | --- |
+| Gateway | `WS /ws` | Drawing operations, replay, pending status and commit acknowledgements. |
+| Gateway | `GET /dashboard-data` | Replica status, quorum, pending count and recent events. |
+| Gateway | `POST /clear` | Queue a replicated clear. |
+| Replica | `GET /status`, `GET /log` | Node state and committed board operations after the last clear. |
+| Replica | `POST /stroke`, `POST /strokes` | Leader-only single or batched operations. |
+| Replica | `POST /request-vote` | Election RPC. |
+| Replica | `POST /append-entries` | Prefix check, replication and commit progress. `/heartbeat` accepts the same fields. |
+| Replica | `POST /sync-log` | Read a page from `from_index`; optionally check `prev_log_term`. |
 
-#### `POST /request-vote`
-**Request Body:**
-```json
-{
-  "term": 5,
-  "candidate_id": "replica1",
-  "last_log_index": 42,
-  "last_log_term": 4
-}
-```
-**Response:**
-```json
-{
-  "term": 5,
-  "vote_granted": true
-}
+Nginx maps `/api/` to gateway HTTP routes and `/ws` to its WebSocket. Host debug ports 3000 and 4001-4003 bind to localhost. There are basic payload checks and size limits, but no authentication between services. Run this on a local machine or trusted lab network.
+
+## Development and verification
+
+`replica1/server.js`, `replica2/server.js` and `replica3/server.js` are separate watch entry points. Editing or touching one restarts only that replica:
+
+```sh
+touch replica1/server.js
+docker compose logs --tail=30 replica1
 ```
 
-#### `POST /append-entries`
-**Request Body:**
-```json
-{
-  "term": 5,
-  "leader_id": "replica1",
-  "prev_log_index": 41,
-  "prev_log_term": 4,
-  "entries": [{"term": 5, "data": {"x0":10,"y0":20,"x1":30,"y1":40,"color":"#000","width":3,"tool":"draw"}}],
-  "leader_commit": 40
-}
-```
-**Response (success):**
-```json
-{"term": 5, "success": true}
-```
-**Response (conflict):**
-```json
-{"term": 5, "success": false, "conflict_index": 38}
+Shared logic is baked into the image. Rebuild and recreate one node at a time, letting it catch up before moving on:
+
+```sh
+docker compose up --build -d --no-deps replica1
+docker compose up --build -d --no-deps replica2
+docker compose up --build -d --no-deps replica3
 ```
 
-#### `POST /heartbeat`
-**Request:** `{"term": 5, "leader_id": "replica1", "leader_commit": 40}`
-**Response:** `{"term": 5, "success": true}`
+The test suite starts three real Node processes and a gateway on temporary ports. It covers follower loss, leader replacement, rejoin, gateway restart, missing quorum, committed-prefix protection, stale replies, malformed input, retry deduplication, clear order, buffer limits and shared undo/redo. Run `npm test` after installing both service dependencies as shown in the README.
 
-#### `POST /sync-log`
-**Request:** `{"from_index": 0}`
-**Response:**
-```json
-{
-  "term": 5,
-  "leader_id": "replica1",
-  "from_index": 0,
-  "commit_index": 40,
-  "entries": [{"term": 1, "data": {...}}, ...]
-}
-```
+`node scripts/failoverDemo.js` tests the running Compose stack through Nginx and restores any node it stops. It respects Compose's `COMPOSE_PROJECT_NAME` and `DOCKER_HOST` variables; `BOARD_URL` changes the frontend URL. A typical run prints a leader, three committed drawings, a replacement leader and matching commit indexes.
 
-#### `POST /stroke` and `POST /strokes`
-Leader-only. Accepts single or batch of strokes from gateway. Returns `307` with `leader_id` if not the current leader.
-
-#### `POST /clear`
-Leader-only. Appends a replicated clear marker `{type: "clear"}` to the log.
-
-#### `GET /status`
-```json
-{
-  "id": "replica1",
-  "role": "leader",
-  "term": 5,
-  "leader_id": "replica1",
-  "log_length": 43,
-  "commit_index": 40,
-  "last_applied": 40,
-  "peers": ["http://replica2:4002", "http://replica3:4003"]
-}
-```
-
-#### `GET /log`
-Returns committed strokes after the last clear marker (for canvas replay on new client connect).
-
-### 3.2 Gateway Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `WS /ws` | Browser WebSocket. Receives `{type:"stroke", stroke:{...}}` or `{type:"strokes", strokes:[...]}` or `{type:"clear"}`. Sends back `{type:"stroke"}`, `{type:"strokes"}`, `{type:"clear"}`, `{type:"full_log"}`, `{type:"leader_change"}`. |
-| `POST /commit-batch` | Leader pushes committed entries. Gateway broadcasts to all clients. |
-| `POST /notify-leader` | Newly elected leader registers `{leader_id, leader_url, term}`. |
-| `GET /status` | `{current_leader, connected_clients, pending_strokes, replicas, term}` |
-| `GET /dashboard-data` | Aggregated cluster data for monitoring dashboard. |
-
----
-
-## 4. Failure Handling Design
-
-### 4.1 Failure Scenarios
-
-| Scenario | System Behavior |
-|----------|----------------|
-| **Leader crash** | Followers' election timers expire (1.5-3s). One becomes candidate, wins election. Gateway discovers new leader via `/notify-leader` or polling `/status`. Clients are never disconnected. |
-| **Follower crash** | Leader continues with remaining follower. Majority (2/3) still achievable. Restarted follower catches up via `/sync-log`. |
-| **Gateway restart** | All WebSocket clients reconnect (auto-reconnect with 2s delay). Gateway re-discovers leader and replays committed log to new connections. |
-| **Network partition (2 nodes isolated)** | The partition with the majority (2 nodes) elects a leader and continues. The isolated node cannot win election (no majority). On partition heal, it catches up. |
-| **Hot reload (file edit)** | `node --watch` restarts the process. Container stays running (`restart: unless-stopped`). RAFT election happens automatically. System stays live. |
-| **All nodes restart simultaneously** | All start as followers, one wins the first election. Log is lost (in-memory). Canvas starts fresh. |
-| **Rapid successive failures** | Exponential backoff on split votes prevents election storms. System stabilizes within a few terms. |
-
-### 4.2 Leader Failover Sequence
-
-```
-1. Replica1 (LEADER) crashes
-2. Replica2: election timer expires (1.5-3s)
-3. Replica2: term++ → becomes CANDIDATE
-4. Replica2: sends RequestVote to Replica3
-5. Replica3: grants vote (candidate log is up-to-date)
-6. Replica2: has 2 votes (majority) → becomes LEADER
-7. Replica2: sends immediate AppendEntries to Replica3 (heartbeat)
-8. Replica2: POST /notify-leader to Gateway
-9. Gateway: updates leader URL, broadcasts leader_change to clients
-10. Clients: see new leader in session panel
-```
-
-### 4.3 Sync-Log Catch-Up Sequence
-
-```
-1. Replica1 restarts (empty log)
-2. Leader sends AppendEntries(prevLogIndex=42, ...)
-3. Replica1: prevLogIndex 42 > log.length 0 → FAIL
-4. Replica1: calls POST /sync-log to leader with from_index=0
-5. Leader: responds with all committed entries [0..42]
-6. Replica1: appends all entries, updates commitIndex=42
-7. Replica1: now in sync, normal replication resumes
-```
-
----
-
-## 5. Docker & Deployment
-
-### 5.1 Container Architecture
-
-| Container | Image Base | Volumes | Env Vars |
-|-----------|-----------|---------|----------|
-| frontend | nginx:alpine | - | - |
-| gateway | node:20-alpine | `./gateway:/app` | `REPLICA_URLS`, `GATEWAY_PORT` |
-| replica1 | node:20-alpine | `./replica1:/app` | `REPLICA_ID=replica1`, `PORT=4001`, `PEERS`, `GATEWAY_URL` |
-| replica2 | node:20-alpine | `./replica2:/app` | `REPLICA_ID=replica2`, `PORT=4002`, `PEERS`, `GATEWAY_URL` |
-| replica3 | node:20-alpine | `./replica3:/app` | `REPLICA_ID=replica3`, `PORT=4003`, `PEERS`, `GATEWAY_URL` |
-
-### 5.2 Startup Ordering
-
-```
-replica1 ──┐
-replica2 ──┼── (condition: service_healthy) ──► gateway ── (condition: service_healthy) ──► frontend
-replica3 ──┘
-```
-
-### 5.3 Hot Reload
-
-Each replica container uses `node --watch server.js` which automatically restarts the Node.js process when the bind-mounted `server.js` file changes. The container itself stays running, and the RAFT protocol handles the temporary unavailability gracefully.
-
----
-
-## 6. Integration Log
-
-### 6.1 Initial Election (3 nodes)
-
-```
-replica2  | Replica replica2 started on port 4002, peers=http://replica1:4001,http://replica3:4003
-replica2  | ⚡ ELECTION term=1
-replica2  | Vote granted by http://replica1:4001 term=1 (2/2)
-replica2  | ★ LEADER term=1
-replica2  | Notified gateway of leadership
-replica1  | → FOLLOWER term=1 leader=null
-replica1  | Voted for replica2 term=1
-replica3  | → FOLLOWER term=1 leader=null
-replica3  | Voted for replica2 term=1
-```
-
-### 6.2 Leader Failover (replica2 killed)
-
-```
-# docker-compose stop replica2
-replica1  | → FOLLOWER term=2 leader=null
-replica1  | ⚡ ELECTION term=3
-replica1  | Vote granted by http://replica3:4003 term=3 (2/2)
-replica1  | ★ LEADER term=3
-replica1  | Notified gateway of leadership
-replica3  | Voted for replica1 term=3
-```
-
-### 6.3 Node Rejoin & Sync (replica2 restarted)
-
-```
-# docker-compose start replica2
-replica2  | Replica replica2 started on port 4002
-replica2  | → FOLLOWER term=3 leader=replica1
-replica2  | Sync catch-up: 41 entries from replica1
-replica2  | Pushed 41 commits (up to index=40)
-```
-
-### 6.4 Stroke Commit Flow
-
-```
-gateway   | Client connected total=2
-replica1  | Appended batch size=3 range=0..2
-replica1  | Committed index=2
-replica1  | Pushed 3 commits (up to index=2)
-gateway   | Committed batch count=3 upto=2 deduped=0
-```
-
----
-
-## 7. Cloud Computing Concepts Demonstrated
-
-| Concept | Implementation |
-|---------|---------------|
-| **Consensus Protocol** | Mini-RAFT - leader election via term-based voting, log replication via AppendEntries, majority commit (2 of 3) |
-| **Fault Tolerance** | Any single node can crash. System auto-recovers via re-election. Restarted nodes catch up via sync-log. |
-| **Zero-Downtime Deployments** | Bind-mounted source + `node --watch` = file edit triggers graceful restart. RAFT handles the temporary gap. |
-| **State Replication** | Append-only stroke log replicated across all 3 nodes. Commit only after majority confirmation. |
-| **Service Discovery** | Gateway polls `/status` and receives `/notify-leader` callbacks. No external service registry needed. |
-| **Real-Time Collaboration** | WebSocket broadcast ensures sub-second propagation of committed strokes to all connected browsers. |
-| **Containerisation** | 5-service docker-compose stack with health checks, startup ordering, shared network, and bind mounts. |
-| **Observability** | Console logs for elections, votes, commits, syncs. Dashboard UI shows live cluster stats, metrics, and event log. |
+Logs and the deduplication history grow for the life of the session. There is no disk log, snapshot compaction, membership change or guarantee for overlapping restarts that erase a majority's state. Keep failures one at a time for the assignment demo.
